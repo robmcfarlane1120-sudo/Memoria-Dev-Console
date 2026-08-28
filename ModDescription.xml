@@ -1,0 +1,96 @@
+<Mod>
+    <Name>Memoria Dev Console</Name>
+    <Author>Robert McFarlane</Author>
+    <InstallationPath>Memoria Dev Console</InstallationPath>
+<PreviewFile>title.png</PreviewFile>
+    <Category>Tools</Category>
+    <Description><![CDATA[
+MEMORIA DEV CONSOLE
+===================
+
+A development and testing utility for FINAL FANTASY IX modding with Memoria.
+
+Memoria Dev Console adds a detached, second-monitor-friendly development console that runs alongside the game and puts common modding, testing, logging, compilation, restart, field-state, and model-viewing tools in one place.
+
+The goal is simple: spend less time closing the game, digging through files, relaunching tools, and rebuilding test states — and more time actually developing and testing your mod.
+
+DEV CONSOLE FEATURES
+--------------------
+
+LIVE LOG
+• Displays Memoria.log in a dedicated live console view.
+• Automatically follows new log entries as they are written.
+• The game remains fully playable while the Live Log is open.
+• Useful for watching script output, errors, warnings, battle behavior, field events, and other runtime information on a second monitor while testing.
+
+COMPILE + RESTART
+• Runs the standard Memoria.Compiler against the installed Memoria script sources.
+• Displays compiler output directly in the Dev Console.
+• After compilation, FINAL FANTASY IX is hard restarted so newly compiled script DLLs can be loaded by the new process.
+• Designed for rapid edit → compile → test iteration when developing C# script mods.
+
+MODEL VIEWER
+• Opens Memoria's Model Viewer directly from the running game without requiring a trip through the launcher.
+• Intended for quickly checking model IDs, animations, weapons, geometry, and other model information during development.
+• Existing field UI and field rendering are isolated while the viewer is active.
+• When the Model Viewer closes, the Dev Console rolls the game back to the most recent stable field state so testing can continue cleanly.
+
+HARD RESET
+• Hard restarts FINAL FANTASY IX without returning to the Memoria launcher.
+• Useful when editing data such as BattlePatch.txt, DictionaryPatch.txt, or other parameters that require a fresh game process before changes can be tested.
+• Provides a much faster edit → reset → test loop than manually closing and relaunching the game.
+
+FIELD STATE
+• Maintains a rolling timeline of recent stable field states while you play.
+• Move backward and forward through captured field states for rapid testing.
+• Set a separate checkpoint and return to it when repeatedly testing the same sequence, cutscene, trigger, NPC, boss encounter, or field script.
+• Field history can be preserved across Dev Console hard restarts, making repeated testing much faster than loading saves and replaying the same route.
+
+RESET TO LAUNCHER
+• Shuts FINAL FANTASY IX down and restarts the Memoria launcher instead of immediately relaunching the game.
+• Use this when you need to enable or disable mods, change mod priority/order, alter launcher options, or adjust Memoria settings before the next test.
+
+CONTROLLER + KEYBOARD WORKFLOW
+• The Dev Console supports keyboard and controller navigation.
+• F10 globally shows or hides the console.
+• Controller Hotkey: Press R2 + R1 + L2 + L1 + D-Pad Down to open or close the Memoria Dev Console.
+• Controller shortcuts are available for fast console access and hard resets during testing.
+• The console freezes normal game processing on development pages where isolation is required, while Live Log remains passive so the game can be played normally while logs are monitored.
+
+The Dev Console is intended as a development utility rather than a gameplay mod. It is especially useful for field scripting, battle scripting, custom C# development, model/animation work, patch-file editing, compatibility testing, and repeated encounter testing.
+
+
+HWS CUSTOM ID MANAGER — SEPARATE TOOL
+======================================
+
+Also included is the HWS Custom ID Manager, a small companion utility for Hades Workshop.
+
+This is a separate external tool and is not loaded by Memoria as part of the in-game Dev Console.
+
+INSTALLATION / USE
+------------------
+
+1. Locate your Hades Workshop installation folder.
+2. Place the HWS Custom ID Manager executable beside HadesWorkshop.exe.
+3. From then on, launch Hades Workshop through the HWS Custom ID Manager instead of opening HadesWorkshop.exe directly.
+4. The manager launches Hades Workshop normally and runs quietly alongside it.
+
+WHAT IT DOES
+------------
+
+Hades Workshop's Memoria export dialogs normally require several custom-ID fields to be filled in again whenever the dialogs are reopened.
+
+The HWS Custom ID Manager remembers your most recent values for:
+
+• Export as custom field
+• Export as custom battle
+
+When those Hades Workshop dialogs are opened again, the manager restores the remembered values automatically.
+
+This is particularly useful when repeatedly editing and re-exporting the same custom field or custom battle. Instead of re-entering the base field/battle selections, identifiers, script IDs, text IDs, background information, DictionaryPatch values, and other custom export parameters every time, you can reopen the export dialog and continue working with your previous values already restored.
+
+The HWS Custom ID Manager does not replace Hades Workshop and does not modify its source. It simply acts as a lightweight launcher/companion that remembers these repetitive export-dialog inputs while Hades Workshop is running.
+
+Together, Memoria Dev Console and HWS Custom ID Manager are designed to remove a large amount of repetitive setup from the FFIX mod-development loop: edit, export, compile, restart, inspect, test, repeat.
+    ]]></Description>
+</Mod>
