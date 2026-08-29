@@ -1,5 +1,7 @@
-<Mod>
+﻿<Mod>
     <Name>Memoria Dev Console</Name>
+<Version>1.0</Version>
+
     <Author>Robert McFarlane</Author>
     <InstallationPath>Memoria Dev Console</InstallationPath>
 <PreviewFile>title.png</PreviewFile>
@@ -10,7 +12,7 @@ MEMORIA DEV CONSOLE
 
 A development and testing utility for FINAL FANTASY IX modding with Memoria.
 
-Memoria Dev Console adds a detached, second-monitor-friendly development console that runs alongside the game and puts common modding, testing, logging, compilation, restart, field-state, and model-viewing tools in one place.
+Memoria Dev Console adds a detached, second-monitor-friendly development console that runs alongside the game and puts common modding, testing, logging, compilation, restart, field-save-state, and model-viewing tools in one place.
 
 The goal is simple: spend less time closing the game, digging through files, relaunching tools, and rebuilding test states — and more time actually developing and testing your mod.
 
@@ -28,6 +30,7 @@ COMPILE + RESTART
 • Displays compiler output directly in the Dev Console.
 • After compilation, FINAL FANTASY IX is hard restarted so newly compiled script DLLs can be loaded by the new process.
 • Designed for rapid edit → compile → test iteration when developing C# script mods.
+• Normal C# compile errors are now reported as compile failures without breaking the Dev Console; restart is simply aborted until the source is fixed.
 
 MODEL VIEWER
 • Opens Memoria's Model Viewer directly from the running game without requiring a trip through the launcher.
@@ -40,11 +43,19 @@ HARD RESET
 • Useful when editing data such as BattlePatch.txt, DictionaryPatch.txt, or other parameters that require a fresh game process before changes can be tested.
 • Provides a much faster edit → reset → test loop than manually closing and relaunching the game.
 
-FIELD STATE
-• Maintains a rolling timeline of recent stable field states while you play.
-• Move backward and forward through captured field states for rapid testing.
+FIELD SAVE STATES
+• Maintains a rolling timeline of recent stable field save states while you play.
+• Move backward and forward through captured field save states for rapid testing.
 • Set a separate checkpoint and return to it when repeatedly testing the same sequence, cutscene, trigger, NPC, boss encounter, or field script.
 • Field history can be preserved across Dev Console hard restarts, making repeated testing much faster than loading saves and replaying the same route.
+
+
+ASSET DUMPER
+• Runs complete-game development dumps directly from the Dev Console.
+• Field Background Dump reconstructs every internal field into per-field BGX metadata and editable PNG overlays under FieldDumper_Output in the game root.
+• 2D Texture Dump loads every known GEO model and exports its runtime model textures as PNGs under 2D Texture Dump Output in the game root.
+• These are intentionally whole-game dumps and create a large number of files.
+• The integrated texture dump does not dump animations.
 
 RESET TO LAUNCHER
 • Shuts FINAL FANTASY IX down and restarts the Memoria launcher instead of immediately relaunching the game.
@@ -60,37 +71,33 @@ CONTROLLER + KEYBOARD WORKFLOW
 The Dev Console is intended as a development utility rather than a gameplay mod. It is especially useful for field scripting, battle scripting, custom C# development, model/animation work, patch-file editing, compatibility testing, and repeated encounter testing.
 
 
-HWS CUSTOM ID MANAGER — SEPARATE TOOL
-======================================
+HWS CUSTOM ID INPUT SAVER — OPTIONAL SEPARATE TOOL
+===================================================
 
-Also included is the HWS Custom ID Manager, a small companion utility for Hades Workshop.
-
-This is a separate external tool and is not loaded by Memoria as part of the in-game Dev Console.
-
-INSTALLATION / USE
-------------------
-
-1. Locate your Hades Workshop installation folder.
-2. Place the HWS Custom ID Manager executable beside HadesWorkshop.exe.
-3. From then on, launch Hades Workshop through the HWS Custom ID Manager instead of opening HadesWorkshop.exe directly.
-4. The manager launches Hades Workshop normally and runs quietly alongside it.
+The HWS Custom ID Input Saver is a small companion tool I made to speed up working with custom fields and custom battles in Hades Workshop.
 
 WHAT IT DOES
 ------------
 
-Hades Workshop's Memoria export dialogs normally require several custom-ID fields to be filled in again whenever the dialogs are reopened.
+When exporting a custom field or custom battle in Hades Workshop, the export dialog contains several dropdowns and ID inputs that need to be filled out.
 
-The HWS Custom ID Manager remembers your most recent values for:
+When you're repeatedly editing and re-exporting the same custom content, filling out those same values over and over gets tedious.
 
-• Export as custom field
-• Export as custom battle
+The HWS Custom ID Input Saver remembers the values entered in those Hades Workshop export dialogs and automatically restores them the next time the dialog is opened.
 
-When those Hades Workshop dialogs are opened again, the manager restores the remembered values automatically.
+This lets you:
 
-This is particularly useful when repeatedly editing and re-exporting the same custom field or custom battle. Instead of re-entering the base field/battle selections, identifiers, script IDs, text IDs, background information, DictionaryPatch values, and other custom export parameters every time, you can reopen the export dialog and continue working with your previous values already restored.
+• Set up your custom field or custom battle export once.
+• Close the export dialog and continue editing in Hades Workshop.
+• Reopen the export dialog later with your previous dropdown selections and ID inputs already restored.
+• Re-export and iterate without repeatedly filling out the same custom ID information.
 
-The HWS Custom ID Manager does not replace Hades Workshop and does not modify its source. It simply acts as a lightweight launcher/companion that remembers these repetitive export-dialog inputs while Hades Workshop is running.
+WHY IT IS NOT INCLUDED
+----------------------
 
-Together, Memoria Dev Console and HWS Custom ID Manager are designed to remove a large amount of repetitive setup from the FFIX mod-development loop: edit, export, compile, restart, inspect, test, repeat.
-    ]]></Description>
+The HWS Custom ID Input Saver is a separate Windows EXE and is not included with this Nexus download because the executable will not pass Nexus Mods' virus scan.
+
+Rather than include an EXE that causes the mod archive to be flagged, I have left it out of the public download.
+
+If you're interested in using the HWS Custom ID Input Saver, private message me.    ]]></Description>
 </Mod>

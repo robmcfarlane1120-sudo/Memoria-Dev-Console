@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Memoria.Prime;
 using UnityEngine;
 
@@ -11,12 +11,18 @@ namespace Memoria.DevConsole
         private CompileService _compileService;
         private FieldStateService _fieldStateService;
         private ModelViewerService _modelViewerService;
+        private ResolutionUiSyncService _resolutionUiSyncService;
+        private AssetDumpService _assetDumpService;
 
         private Boolean _visible;
         private String _lastNativeError;
 
         private volatile Boolean _compileRequested;
         private volatile Boolean _modelViewerToggleRequested;
+        private volatile Boolean _hardResetRequested;
+        private volatile Boolean _resetToLauncherRequested;
+        private volatile Int32 _assetDumpRequested;
+        private volatile Int32 _assetLookupId = -1;
         private volatile Boolean _restartPending;
         private DateTime _restartNotBeforeUtc = DateTime.MinValue;
 
@@ -46,6 +52,10 @@ namespace Memoria.DevConsole
             _window.FieldStateSetCheckpointRequested += OnFieldStateSetCheckpointRequested;
             _window.FieldStateLoadCheckpointRequested += OnFieldStateLoadCheckpointRequested;
                                 _window.FieldStatePageOpened += OnFieldStatePageOpened;
+                _window.FieldBackgroundDumpRequested += OnFieldBackgroundDumpRequested;
+                _window.TextureDumpRequested += OnTextureDumpRequested;
+                _window.FieldBackgroundByIdRequested += OnFieldBackgroundByIdRequested;
+                _window.TextureByModelIdRequested += OnTextureByModelIdRequested;
 
                 _compileService = new CompileService(
                     AppendCompileOutput,
@@ -54,6 +64,8 @@ namespace Memoria.DevConsole
                 _fieldStateService = new FieldStateService();
                 _fieldStateService.Initialize();
                 _modelViewerService = new ModelViewerService(_fieldStateService);
+                _resolutionUiSyncService = new ResolutionUiSyncService();
+                _assetDumpService = new AssetDumpService();
 
                 if (_window.Start())
                     Log.Message("[Dev Console] Native menu window thread started.");
@@ -74,6 +86,9 @@ namespace Memoria.DevConsole
         {
             try
             {
+                if (_resolutionUiSyncService != null)
+                    _resolutionUiSyncService.Update();
+
                 if (_logService != null)
                 {
                     _logService.Update();
@@ -123,6 +138,42 @@ namespace Memoria.DevConsole
                     }
                 }
 
+                if (_resetToLauncherRequested)
+                {
+                    _resetToLauncherRequested = false;
+                    _hardResetRequested = false;
+
+                    try
+                    {
+                        if (_fieldStateService != null)
+                            _fieldStateService.PersistHistoryForRestart();
+
+                        Log.Message("[Dev Console] Reset to Launcher requested.");
+                        HardResetService.RestartToLauncher();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error("[Dev Console] Reset to Launcher failed: " + ex);
+                    }
+                }
+                else if (_hardResetRequested)
+                {
+                    _hardResetRequested = false;
+
+                    try
+                    {
+                        if (_fieldStateService != null)
+                            _fieldStateService.PersistHistoryForRestart();
+
+                        Log.Message("[Dev Console] Controller hard reset chord triggered.");
+                        HardResetService.Restart();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error("[Dev Console] Controller hard reset failed: " + ex);
+                    }
+                }
+
                 if (_compileRequested)
                 {
                     _compileRequested = false;
@@ -138,6 +189,46 @@ namespace Memoria.DevConsole
                     else
                     {
                         Log.Message("[Dev Console] Compile All started.");
+                    }
+                }
+
+
+                if (_assetDumpRequested != 0)
+                {
+                    Int32 dumpRequest = _assetDumpRequested;
+                    _assetDumpRequested = 0;
+
+                    if (_assetDumpService == null || _window == null)
+                    {
+                        SetAssetDumpStatus("Asset dump service is not available.");
+                    }
+                    else if (_assetDumpService.IsRunning)
+                    {
+                        SetAssetDumpStatus("A complete-game asset dump is already running. Please let it finish.");
+                    }
+                    else if (dumpRequest == 1)
+                    {
+                        Log.Message("[Dev Console] Complete field background dump started.");
+                        StartCoroutine(_assetDumpService.DumpFieldBackgrounds(SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 2)
+                    {
+                        Log.Message("[Dev Console] Complete model texture dump started.");
+                        StartCoroutine(_assetDumpService.DumpModelTextures(SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 3)
+                    {
+                        Int32 id = _assetLookupId;
+                        _assetLookupId = -1;
+                        Log.Message("[Dev Console] Single field background dump requested: " + id);
+                        StartCoroutine(_assetDumpService.DumpFieldBackground(id, SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 4)
+                    {
+                        Int32 id = _assetLookupId;
+                        _assetLookupId = -1;
+                        Log.Message("[Dev Console] Single model texture dump requested: " + id);
+                        StartCoroutine(_assetDumpService.DumpModelTexture(id, SetAssetDumpStatus));
                     }
                 }
 
@@ -312,34 +403,15 @@ namespace Memoria.DevConsole
 
         private void OnHardResetRequested()
         {
-            try
-            {
-                if (_fieldStateService != null)
-                    _fieldStateService.PersistHistoryForRestart();
-
-                Log.Message("[Dev Console] Controller hard reset chord triggered.");
-                HardResetService.Restart();
-            }
-            catch (Exception ex)
-            {
-                Log.Error("[Dev Console] Controller hard reset failed: " + ex);
-            }
+            // Native console events originate on the Win32 window thread.
+            // Persisting live FFIX state and quitting Unity must happen in Update().
+            _hardResetRequested = true;
         }
 
         private void OnResetToLauncherRequested()
         {
-            try
-            {
-                if (_fieldStateService != null)
-                    _fieldStateService.PersistHistoryForRestart();
-
-                Log.Message("[Dev Console] Reset to Launcher requested.");
-                HardResetService.RestartToLauncher();
-            }
-            catch (Exception ex)
-            {
-                Log.Error("[Dev Console] Reset to Launcher failed: " + ex);
-            }
+            // Same rule as Hard Reset: marshal all Unity work to the main thread.
+            _resetToLauncherRequested = true;
         }
 
         private void OnModelViewerRequested()
@@ -347,6 +419,36 @@ namespace Memoria.DevConsole
             // Native console events originate on the Win32 window thread.
             // Unity / ModelViewerScene work must happen on the Unity main thread.
             _modelViewerToggleRequested = true;
+        }
+
+
+        private void OnFieldBackgroundDumpRequested()
+        {
+            // Native window callbacks happen on the Win32 thread; defer Unity work to Update().
+            _assetDumpRequested = 1;
+        }
+
+        private void OnTextureDumpRequested()
+        {
+            _assetDumpRequested = 2;
+        }
+
+        private void OnFieldBackgroundByIdRequested(Int32 fieldId)
+        {
+            _assetLookupId = fieldId;
+            _assetDumpRequested = 3;
+        }
+
+        private void OnTextureByModelIdRequested(Int32 modelId)
+        {
+            _assetLookupId = modelId;
+            _assetDumpRequested = 4;
+        }
+
+        private void SetAssetDumpStatus(String text)
+        {
+            if (_window != null)
+                _window.SetAssetDumpStatus(text);
         }
 
         private void OnCompileRestartRequested()
@@ -393,6 +495,10 @@ namespace Memoria.DevConsole
                 _window.ModelViewerRequested -= OnModelViewerRequested;
                 _window.HardResetRequested -= OnHardResetRequested;
                 _window.ResetToLauncherRequested -= OnResetToLauncherRequested;
+                _window.FieldBackgroundDumpRequested -= OnFieldBackgroundDumpRequested;
+                _window.TextureDumpRequested -= OnTextureDumpRequested;
+                _window.FieldBackgroundByIdRequested -= OnFieldBackgroundByIdRequested;
+                _window.TextureByModelIdRequested -= OnTextureByModelIdRequested;
                 _window.Dispose();
                 _window = null;
             }

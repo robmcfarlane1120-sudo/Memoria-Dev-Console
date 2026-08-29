@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -138,20 +138,40 @@ namespace Memoria.DevConsole
             StringBuilder content = new StringBuilder();
 
             content.AppendLine("@echo off");
+            content.AppendLine("setlocal EnableExtensions EnableDelayedExpansion");
             content.AppendLine(
                 "echo Dev Console restart helper started %date% %time% > \"" +
                 EscapeBatchQuoted(helperLog) + "\"");
+            content.AppendLine("set /a WAITCOUNT=0");
 
             content.AppendLine(":wait");
             content.AppendLine(
                 "tasklist /FI \"PID eq " + processId +
                 "\" /NH | findstr /R /C:\"[ ]" + processId + "[ ]\" >nul");
+            content.AppendLine("if errorlevel 1 goto proceed");
 
-            content.AppendLine(
-                "if not errorlevel 1 (ping 127.0.0.1 -n 2 >nul & goto wait)");
+            content.AppendLine("set /a WAITCOUNT+=1");
+            content.AppendLine("if !WAITCOUNT! GEQ 60 goto forcekill");
 
+            // Batch has no reliable sub-second sleep primitive. PowerShell is
+            // available on supported Windows versions and gives us a true 250 ms
+            // wait without abusing ping/network timing.
             content.AppendLine(
-                "echo Old PID exited %date% %time% >> \"" +
+                "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Milliseconds 250\" >nul 2>&1");
+            content.AppendLine("goto wait");
+
+            content.AppendLine(":forcekill");
+            content.AppendLine(
+                "echo Old PID still alive after 15 seconds; forcing termination %date% %time% >> \"" +
+                EscapeBatchQuoted(helperLog) + "\"");
+            content.AppendLine(
+                "taskkill /F /PID " + processId + " >nul 2>&1");
+            content.AppendLine(
+                "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Milliseconds 250\" >nul 2>&1");
+
+            content.AppendLine(":proceed");
+            content.AppendLine(
+                "echo Old PID cleared %date% %time% >> \"" +
                 EscapeBatchQuoted(helperLog) + "\"");
 
             content.AppendLine(
@@ -188,20 +208,36 @@ namespace Memoria.DevConsole
             StringBuilder content = new StringBuilder();
 
             content.AppendLine("@echo off");
+            content.AppendLine("setlocal EnableExtensions EnableDelayedExpansion");
             content.AppendLine(
                 "echo Dev Console launcher restart helper started %date% %time% > \"" +
                 EscapeBatchQuoted(helperLog) + "\"");
+            content.AppendLine("set /a WAITCOUNT=0");
 
             content.AppendLine(":wait");
             content.AppendLine(
                 "tasklist /FI \"PID eq " + processId +
                 "\" /NH | findstr /R /C:\"[ ]" + processId + "[ ]\" >nul");
+            content.AppendLine("if errorlevel 1 goto proceed");
 
+            content.AppendLine("set /a WAITCOUNT+=1");
+            content.AppendLine("if !WAITCOUNT! GEQ 60 goto forcekill");
             content.AppendLine(
-                "if not errorlevel 1 (ping 127.0.0.1 -n 2 >nul & goto wait)");
+                "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Milliseconds 250\" >nul 2>&1");
+            content.AppendLine("goto wait");
 
+            content.AppendLine(":forcekill");
             content.AppendLine(
-                "echo Old PID exited %date% %time% >> \"" +
+                "echo Old PID still alive after 15 seconds; forcing termination %date% %time% >> \"" +
+                EscapeBatchQuoted(helperLog) + "\"");
+            content.AppendLine(
+                "taskkill /F /PID " + processId + " >nul 2>&1");
+            content.AppendLine(
+                "powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"Start-Sleep -Milliseconds 250\" >nul 2>&1");
+
+            content.AppendLine(":proceed");
+            content.AppendLine(
+                "echo Old PID cleared %date% %time% >> \"" +
                 EscapeBatchQuoted(helperLog) + "\"");
 
             content.AppendLine(

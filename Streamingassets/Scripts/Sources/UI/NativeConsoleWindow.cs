@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -15,7 +17,8 @@ namespace Memoria.DevConsole
             CompileRestart,
             ModelViewer,
             GameReset,
-            FieldState
+            FieldState,
+            AssetDumper
         }
 
         private const Int32 CW_USEDEFAULT = unchecked((Int32)0x80000000);
@@ -59,6 +62,7 @@ namespace Memoria.DevConsole
         private const UInt32 WM_APP_EXIT = 0x8004;
         private const UInt32 WM_APP_COMPILE_APPEND = 0x8005;
         private const UInt32 WM_APP_FIELD_STATE_TEXT = 0x8006;
+        private const UInt32 WM_APP_ASSET_DUMP_TEXT = 0x8007;
 
         private const Int32 SB_BOTTOM = 7;
         private const Int32 TRANSPARENT = 1;
@@ -70,6 +74,7 @@ namespace Memoria.DevConsole
         private const Int32 VK_A = 0x41;
         private const Int32 VK_CONTROL = 0x11;
         private const Int32 VK_RETURN = 0x0D;
+        private const Int32 VK_BACK = 0x08;
         private const Int32 VK_UP = 0x26;
         private const Int32 VK_DOWN = 0x28;
         private const UInt32 VK_F10 = 0x79;
@@ -79,7 +84,10 @@ namespace Memoria.DevConsole
         private const Int32 VK_4 = 0x34;
         private const Int32 VK_5 = 0x35;
         private const Int32 VK_6 = 0x36;
+        private const Int32 VK_7 = 0x37;
         private const Int32 VK_S = 0x53;
+        private const Int32 VK_O = 0x4F;
+        private const Int32 VK_R = 0x52;
         private const Int32 WH_KEYBOARD_LL = 13;
         private const UInt32 MB_OK = 0x00000000;
         private const UInt32 MB_ICONINFORMATION = 0x00000040;
@@ -103,6 +111,10 @@ namespace Memoria.DevConsole
 
         private Int32 _homeSelection;
         private Int32 _fieldSelection;
+        private Int32 _assetSelection;
+        private Boolean _assetIdEntryActive;
+        private Boolean _assetIdEntryIsField;
+        private String _assetIdEntryText = String.Empty;
         private Boolean _controllerWasConnected;
         private GamePadState _previousPadState;
         private Boolean _hardResetChordLatched;
@@ -119,6 +131,8 @@ namespace Memoria.DevConsole
         private String _pendingCompileAppend = String.Empty;
         private readonly Object _fieldStateLock = new Object();
         private String _pendingFieldStateText = String.Empty;
+        private readonly Object _assetDumpLock = new Object();
+        private String _pendingAssetDumpText = "Ready. Select one of the complete-game dump operations above.";
 
         public event Action CompileRestartRequested;
         public event Action ModelViewerRequested;
@@ -129,6 +143,10 @@ namespace Memoria.DevConsole
         public event Action FieldStateSetCheckpointRequested;
         public event Action FieldStateLoadCheckpointRequested;
         public event Action FieldStatePageOpened;
+        public event Action FieldBackgroundDumpRequested;
+        public event Action TextureDumpRequested;
+        public event Action<Int32> FieldBackgroundByIdRequested;
+        public event Action<Int32> TextureByModelIdRequested;
 
         private volatile String _lastError;
         private WndProcDelegate _wndProc;
@@ -385,6 +403,10 @@ namespace Memoria.DevConsole
                     RenderFieldStateStatus();
                     return IntPtr.Zero;
 
+                case WM_APP_ASSET_DUMP_TEXT:
+                    RenderAssetDumper();
+                    return IntPtr.Zero;
+
                 case WM_TIMER:
                     if (new UIntPtr(unchecked((UInt64)wParam.ToInt64())) == CONTROLLER_TIMER_ID)
                     {
@@ -454,6 +476,18 @@ namespace Memoria.DevConsole
 
         private void HandleCharacter(Char ch)
         {
+            if (_page == Page.AssetDumper && !_assetIdEntryActive && (ch == 'o' || ch == 'O'))
+            {
+                OpenAssetOutputFolder();
+                return;
+            }
+
+            if (_page == Page.CompileRestart && (ch == 'r' || ch == 'R'))
+            {
+                RetryCompile();
+                return;
+            }
+
             if (_page == Page.Home)
             {
                 switch (ch)
@@ -481,6 +515,32 @@ namespace Memoria.DevConsole
                     case '6':
                         _homeSelection = 5;
                         ActivateHomeSelection();
+                        return;
+                    case '7':
+                        _homeSelection = 6;
+                        ActivateHomeSelection();
+                        return;
+                }
+            }
+            else if (_page == Page.AssetDumper)
+            {
+                switch (ch)
+                {
+                    case '1':
+                        _assetSelection = 0;
+                        ActivateAssetSelection();
+                        return;
+                    case '2':
+                        _assetSelection = 1;
+                        ActivateAssetSelection();
+                        return;
+                    case '3':
+                        _assetSelection = 2;
+                        ActivateAssetSelection();
+                        return;
+                    case '4':
+                        _assetSelection = 3;
+                        ActivateAssetSelection();
                         return;
                 }
             }
@@ -561,6 +621,13 @@ namespace Memoria.DevConsole
         {
             if (vk == VK_ESCAPE)
             {
+                if (_page == Page.AssetDumper && _assetIdEntryActive)
+                {
+                    _assetIdEntryActive = false;
+                    _assetIdEntryText = String.Empty;
+                    RenderAssetDumper();
+                    return true;
+                }
                 // Live Log is passive while FFIX owns focus. The user must click
                 // the Dev Console first before ESC is allowed to leave Live Log.
                 if (_page == Page.LiveLog && !IsConsoleForeground())
@@ -584,16 +651,59 @@ namespace Memoria.DevConsole
 
             if (vk == VK_RETURN)
             {
-                ActivateControllerSelection();
+                if (_page == Page.AssetDumper && _assetIdEntryActive)
+                    SubmitAssetIdEntry();
+                else
+                    ActivateControllerSelection();
+                return true;
+            }
+
+            if (_page == Page.AssetDumper && _assetIdEntryActive)
+            {
+                if (vk == VK_BACK)
+                {
+                    if (_assetIdEntryText.Length > 0)
+                        _assetIdEntryText = _assetIdEntryText.Substring(0, _assetIdEntryText.Length - 1);
+                    RenderAssetDumper();
+                    return true;
+                }
+
+                if (vk >= 0x30 && vk <= 0x39)
+                {
+                    if (_assetIdEntryText.Length < 8)
+                        _assetIdEntryText += (Char)vk;
+                    RenderAssetDumper();
+                    return true;
+                }
+            }
+
+            if (_page == Page.AssetDumper && !_assetIdEntryActive && vk == VK_O)
+            {
+                OpenAssetOutputFolder();
+                return true;
+            }
+
+            if (_page == Page.CompileRestart && vk == VK_R)
+            {
+                RetryCompile();
                 return true;
             }
 
             if (_page == Page.Home)
             {
-                if (vk >= VK_1 && vk <= VK_6)
+                if (vk >= VK_1 && vk <= VK_7)
                 {
                     _homeSelection = vk - VK_1;
                     ActivateHomeSelection();
+                    return true;
+                }
+            }
+            else if (_page == Page.AssetDumper)
+            {
+                if (vk >= VK_1 && vk <= VK_4)
+                {
+                    _assetSelection = vk - VK_1;
+                    ActivateAssetSelection();
                     return true;
                 }
             }
@@ -746,8 +856,13 @@ namespace Memoria.DevConsole
         {
             if (_page == Page.Home)
             {
-                _homeSelection = WrapSelection(_homeSelection + delta, 6);
+                _homeSelection = WrapSelection(_homeSelection + delta, 7);
                 RenderHome();
+            }
+            else if (_page == Page.AssetDumper)
+            {
+                _assetSelection = WrapSelection(_assetSelection + delta, 4);
+                RenderAssetDumper();
             }
             else if (_page == Page.FieldState)
             {
@@ -774,6 +889,8 @@ namespace Memoria.DevConsole
         {
             if (_page == Page.Home)
                 ActivateHomeSelection();
+            else if (_page == Page.AssetDumper)
+                ActivateAssetSelection();
             else if (_page == Page.FieldState)
                 ActivateFieldSelection();
         }
@@ -833,10 +950,79 @@ namespace Memoria.DevConsole
                     return;
 
                 case 5:
+                    _assetSelection = 0;
+                    RenderAssetDumper();
+                    return;
+
+                case 6:
                     Action launcherHandler = ResetToLauncherRequested;
                     if (launcherHandler != null)
                         launcherHandler();
                     return;
+            }
+        }
+
+
+        private void ActivateAssetSelection()
+        {
+            if (_assetSelection == 0)
+            {
+                SetAssetDumpStatus("Field Background Dump requested. Starting complete game dump...");
+                Action handler = FieldBackgroundDumpRequested;
+                if (handler != null)
+                    handler();
+            }
+            else if (_assetSelection == 1)
+            {
+                SetAssetDumpStatus("2D Texture Dump requested. Starting complete game dump...");
+                Action handler = TextureDumpRequested;
+                if (handler != null)
+                    handler();
+            }
+            else if (_assetSelection == 2)
+            {
+                BeginAssetIdEntry(true);
+            }
+            else if (_assetSelection == 3)
+            {
+                BeginAssetIdEntry(false);
+            }
+        }
+
+        private void BeginAssetIdEntry(Boolean isField)
+        {
+            _assetIdEntryActive = true;
+            _assetIdEntryIsField = isField;
+            _assetIdEntryText = String.Empty;
+            RenderAssetDumper();
+        }
+
+        private void SubmitAssetIdEntry()
+        {
+            Int32 id;
+            if (!Int32.TryParse(_assetIdEntryText, out id))
+            {
+                SetAssetDumpStatus("Enter a numeric " + (_assetIdEntryIsField ? "field" : "model") + " ID first.");
+                return;
+            }
+
+            Boolean isField = _assetIdEntryIsField;
+            _assetIdEntryActive = false;
+            _assetIdEntryText = String.Empty;
+
+            if (isField)
+            {
+                SetAssetDumpStatus("Field ID " + id + " requested...");
+                Action<Int32> handler = FieldBackgroundByIdRequested;
+                if (handler != null)
+                    handler(id);
+            }
+            else
+            {
+                SetAssetDumpStatus("Model ID " + id + " requested...");
+                Action<Int32> handler = TextureByModelIdRequested;
+                if (handler != null)
+                    handler(id);
             }
         }
 
@@ -878,15 +1064,23 @@ namespace Memoria.DevConsole
 
             SetConsoleText(
                 "\r\n" +
-                "MEMORIA DEV CONSOLE\r\n" +
-                "------------------------------------------------------------\r\n" +
+                "===============================================================================\r\n" +
+                " __  __ _____ __  __  ___  ____  ___    _\r\n" +
+                "|  \\/  | ____|  \\/  |/ _ \\|  _ \\|_ _|  / \\ \r\n" +
+                "| |\\/| |  _| | |\\/| | | | | |_) || |  / _ \\ \r\n" +
+                "| |  | | |___| |  | | |_| |  _ < | | / ___ \\ \r\n" +
+                "|_|  |_|_____|_|  |_|\\___/|_| \\_\\___/_/   \\_\\\r\n" +
+                "\r\n" +
+                "                    D E V   C O N S O L E              by Cheddarbung\r\n" +
+                "===============================================================================\r\n" +
                 "\r\n" +
                 MenuLine(_homeSelection == 0, "[1] Live Log") +
                 MenuLine(_homeSelection == 1, "[2] Compile + Restart") +
                 MenuLine(_homeSelection == 2, "[3] Open / Close Model Viewer") +
                 MenuLine(_homeSelection == 3, "[4] Hard Reset") +
-                MenuLine(_homeSelection == 4, "[5] Field State") +
-                MenuLine(_homeSelection == 5, "[6] Reset to Launcher") +
+                MenuLine(_homeSelection == 4, "[5] Field Save States") +
+                MenuLine(_homeSelection == 5, "[6] Asset Dumper") +
+                MenuLine(_homeSelection == 6, "[7] Reset to Launcher") +
                 "\r\n" +
                 "------------------------------------------------------------\r\n" +
                 "DESCRIPTION\r\n" +
@@ -895,7 +1089,7 @@ namespace Memoria.DevConsole
                 "\r\n" +
                 "------------------------------------------------------------\r\n" +
                 "D-Pad / Arrow Keys: Navigate    A / Enter: Select    B / ESC: Close\r\n" +
-                "F10: Toggle    Keyboard [1-6] still supported\r\n");
+                "F10: Toggle    Keyboard [1-7] still supported\r\n");
 
             SetFocus(_windowHandle);
         }
@@ -906,8 +1100,8 @@ namespace Memoria.DevConsole
             {
                 case 0:
                     return
-                        "Moves backward through the rolling history of the last 10 automatically captured field states.\r\n" +
-                        "Use it to return to older test locations without loading a save or replaying the game.\r\n";
+                        "Moves backward through the rolling history of the last 10 automatically captured field save states.\r\n" +
+                        "Use it to return to older test locations without loading a normal save or replaying the game.\r\n";
 
                 case 1:
                     return
@@ -916,8 +1110,8 @@ namespace Memoria.DevConsole
 
                 case 2:
                     return
-                        "Pins the exact field state you are currently in as one dedicated checkpoint.\r\n" +
-                        "The checkpoint is separate from the rolling 10-state history, so new field captures cannot push it out.\r\n";
+                        "Pins your current field save state as one dedicated checkpoint.\r\n" +
+                        "The checkpoint is separate from the rolling 10-state history, so new captures cannot push it out.\r\n";
 
                 case 3:
                     return
@@ -954,10 +1148,15 @@ namespace Memoria.DevConsole
 
                 case 4:
                     return
-                        "Quickly reloads recent field states from the last 10 captured fields.\r\n" +
-                        "Useful for field scripting and awkward test locations: no manual save reload or replaying the game to return to the test spot.\r\n";
+                        "Automatically keeps the last 10 field save states for rapid testing.\r\n" +
+                        "Move backward or forward through recent states, or use a dedicated checkpoint that remains separate from the rolling history.\r\n";
 
                 case 5:
+                    return
+                        "Exports complete-game development assets directly into folders in the FFIX game root.\r\n" +
+                        "Includes the full Field Creator-style background dump and the full runtime model 2D texture dump. These operations create a lot of files.\r\n";
+
+                case 6:
                     return
                         "Shuts the game down and restarts to the Memoria launcher.\r\n" +
                         "Use it to change enabled mods, mod order, and Memoria settings before launching FFIX again.\r\n";
@@ -995,6 +1194,15 @@ namespace Memoria.DevConsole
             SetFocus(_windowHandle);
         }
 
+        private void RetryCompile()
+        {
+            RenderCompileRestart();
+
+            Action compileHandler = CompileRestartRequested;
+            if (compileHandler != null)
+                compileHandler();
+        }
+
         private void RenderCompileRestart()
         {
             _page = Page.CompileRestart;
@@ -1009,7 +1217,9 @@ namespace Memoria.DevConsole
                 "MEMORIA DEV CONSOLE  /  COMPILE + RESTART\r\n" +
                 "------------------------------------------------------------\r\n" +
                 "\r\n" +
-                "Starting compiler...\r\n\r\n");
+                "Starting compiler...\r\n\r\n" +
+                "If compilation fails, fix the source and press [R] here to compile again.\r\n" +
+                "[ESC] Back\r\n\r\n");
 
             SetFocus(_windowHandle);
         }
@@ -1053,15 +1263,126 @@ namespace Memoria.DevConsole
                 "[B / ESC] Back\r\n");
         }
 
+        private void RenderAssetDumper()
+        {
+            _page = Page.AssetDumper;
+            SetWindowText(_windowHandle, "Memoria Dev Console - Asset Dumper");
+
+            String status;
+            lock (_assetDumpLock)
+                status = _pendingAssetDumpText;
+
+            SetConsoleText(
+                "\r\n" +
+                "MEMORIA DEV CONSOLE  /  ASSET DUMPER\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "\r\n" +
+                MenuLine(_assetSelection == 0, "[1] Field Background Dump - Complete Game") +
+                MenuLine(_assetSelection == 1, "[2] 2D Texture Dump - Complete Game") +
+                MenuLine(_assetSelection == 2, "[3] Field Background by Field ID") +
+                MenuLine(_assetSelection == 3, "[4] 2D Textures by Model ID") +
+                "\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "DESCRIPTION\r\n" +
+                "------------------------------------------------------------\r\n" +
+                GetAssetDumpDescription(_assetSelection) +
+                "\r\n" +
+                "IMPORTANT\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "Options 1 and 2 are COMPLETE GAME dumps and create a large number of files.\r\n" +
+                "Options 3 and 4 are quick lookup dumps for one exact field ID or model ID.\r\n" +
+                "Complete dumps may take a while; existing completed entries are skipped.\r\n" +
+                "Output is written directly under the FINAL FANTASY IX game folder.\r\n" +
+                "\r\n" +
+                (_assetIdEntryActive
+                    ? ((_assetIdEntryIsField ? "FIELD ID LOOKUP" : "MODEL ID LOOKUP") + "\r\n" +
+                       "------------------------------------------------------------\r\n" +
+                       "Type numeric ID: " + (_assetIdEntryText.Length == 0 ? "_" : _assetIdEntryText + "_") + "\r\n" +
+                       "Enter: Dump    Backspace: Edit    ESC: Cancel\r\n\r\n")
+                    : String.Empty) +
+                "STATUS\r\n" +
+                "------------------------------------------------------------\r\n" +
+                status +
+                "\r\n\r\n" +
+                "------------------------------------------------------------\r\n" +
+                "D-Pad / Arrow Keys: Navigate    A / Enter: Start Dump    O: Open Output Folder    B / ESC: Back\r\n");
+
+            SetFocus(_windowHandle);
+        }
+
+        private void OpenAssetOutputFolder()
+        {
+            try
+            {
+                String folderName = (_assetSelection == 0 || _assetSelection == 2)
+                    ? "FieldDumper_Output"
+                    : "2D Texture Dump Output";
+                String outputPath = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), folderName);
+
+                if (!Directory.Exists(outputPath))
+                {
+                    SetAssetDumpStatus("Output folder does not exist yet. Run this dump first.\r\nExpected: " + outputPath);
+                    return;
+                }
+
+                Process.Start("explorer.exe", "\"" + outputPath + "\"");
+                SetAssetDumpStatus("Opened output folder:\r\n" + outputPath);
+            }
+            catch (Exception ex)
+            {
+                SetAssetDumpStatus("Could not open output folder.\r\n" + ex.Message);
+            }
+        }
+
+        private static String GetAssetDumpDescription(Int32 selection)
+        {
+            if (selection == 0)
+            {
+                return
+                    "Exports every internal FFIX field background using Memoria's Field Creator reconstruction path.\r\n" +
+                    "Creates FieldDumper_Output in the game root with per-field BGX metadata plus editable reconstructed PNG overlay images.\r\n";
+            }
+
+            if (selection == 1)
+            {
+                return
+                    "Loads every known GEO model through Memoria and writes its runtime 2D textures as PNG files.\r\n" +
+                    "Creates 2D Texture Dump Output in the game root, organized by model category and model ID/name or GEO key. No animations are dumped.\r\n";
+            }
+
+            if (selection == 2)
+            {
+                return
+                    "Enter an exact FFIX field ID and export only that field's reconstructed BGX + editable PNG overlays.\r\n" +
+                    "Uses the same FieldDumper_Output structure as the complete field dump. Great for grabbing one field without dumping all 817.\r\n";
+            }
+
+            return
+                "Enter an exact GEO model ID and export only that model's runtime 2D textures plus GEO_KEY.txt.\r\n" +
+                "Uses the same 2D Texture Dump Output structure as the complete texture dump. Great for Model Viewer lookup workflow.\r\n";
+        }
+
+        public void SetAssetDumpStatus(String status)
+        {
+            if (!_running)
+                return;
+
+            lock (_assetDumpLock)
+                _pendingAssetDumpText = status ?? String.Empty;
+
+            if (_windowHandle != IntPtr.Zero)
+                PostMessage(_windowHandle, WM_APP_ASSET_DUMP_TEXT, IntPtr.Zero, IntPtr.Zero);
+        }
+
         private void RenderFieldState()
         {
             _page = Page.FieldState;
 
-            SetWindowText(_windowHandle, "Memoria Dev Console - Field State");
+            SetWindowText(_windowHandle, "Memoria Dev Console - Field Save States");
 
             SetConsoleText(
                 "\r\n" +
-                "MEMORIA DEV CONSOLE  /  FIELD STATE\r\n" +
+                "MEMORIA DEV CONSOLE  /  FIELD SAVE STATES\r\n" +
                 "------------------------------------------------------------\r\n" +
                 "\r\n" +
                 MenuLine(_fieldSelection == 0, "[1] Move Back") +
@@ -1074,7 +1395,7 @@ namespace Memoria.DevConsole
                 "------------------------------------------------------------\r\n" +
                 GetFieldStateDescription(_fieldSelection) +
                 "\r\n" +
-                "FIELD TIMELINE\r\n" +
+                "FIELD SAVE STATE TIMELINE\r\n" +
                 "------------------------------------------------------------\r\n" +
                 "Loading...\r\n" +
                 "\r\n" +
@@ -1108,7 +1429,7 @@ namespace Memoria.DevConsole
 
             SetConsoleText(
                 "\r\n" +
-                "MEMORIA DEV CONSOLE  /  FIELD STATE\r\n" +
+                "MEMORIA DEV CONSOLE  /  FIELD SAVE STATES\r\n" +
                 "------------------------------------------------------------\r\n" +
                 "\r\n" +
                 MenuLine(_fieldSelection == 0, "[1] Move Back") +
@@ -1121,7 +1442,7 @@ namespace Memoria.DevConsole
                 "------------------------------------------------------------\r\n" +
                 GetFieldStateDescription(_fieldSelection) +
                 "\r\n" +
-                "FIELD TIMELINE\r\n" +
+                "FIELD SAVE STATE TIMELINE\r\n" +
                 "------------------------------------------------------------\r\n" +
                 status +
                 "\r\n\r\n" +

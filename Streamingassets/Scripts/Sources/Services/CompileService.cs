@@ -23,6 +23,8 @@ namespace Memoria.DevConsole
         private Thread _thread;
         private volatile Boolean _running;
         private volatile Boolean _disposed;
+        private volatile Boolean _awaitingRetry;
+        private volatile Boolean _retryRequested;
 
         public Boolean IsRunning
         {
@@ -37,9 +39,26 @@ namespace Memoria.DevConsole
 
         public Boolean Start()
         {
-            if (_disposed || _running)
+            if (_disposed)
                 return false;
 
+            // If Memoria.Compiler is still alive at its own
+            // "Press R to retry..." prompt, reuse that exact process.
+            // This is much safer than killing it and trying to attach to a
+            // second console process after every source error.
+            if (_running)
+            {
+                if (_awaitingRetry)
+                {
+                    _retryRequested = true;
+                    return true;
+                }
+
+                return false;
+            }
+
+            _retryRequested = false;
+            _awaitingRetry = false;
             _running = true;
 
             _thread = new Thread(CompileThreadMain);
@@ -107,9 +126,23 @@ namespace Memoria.DevConsole
                 }
 
                 if (!attached)
+                {
+                    if (process.HasExited)
+                    {
+                        WriteLine("Memoria.Compiler exited during startup before the Dev Console could attach.");
+                        WriteLine("This is treated as a normal compilation failure; FFIX will not restart.");
+                        WriteLine(String.Empty);
+                        WriteLine("------------------------------------------------------------");
+                        WriteLine("COMPILATION FAILED");
+                        WriteLine("Restart aborted.");
+                        WriteLine("[ESC] Back");
+                        return;
+                    }
+
                     throw new InvalidOperationException(
                         "Could not attach to the compiler console. Win32 error: " +
                         Marshal.GetLastWin32Error());
+                }
 
                 IntPtr consoleWindow = GetConsoleWindow();
 
@@ -125,55 +158,138 @@ namespace Memoria.DevConsole
                 if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1))
                     throw new InvalidOperationException("Could not open compiler console output.");
 
-                // Wait for Memoria.Compiler's selection prompt before pressing A.
-                WaitForText(outputHandle, process, "Pick which script(s) to compile", 10000);
+                // Memoria.Compiler compiles discovered source folders before it draws this menu.
+                // A normal C# source error can therefore make the compiler exit before the menu exists.
+                // Treat that as a compile failure, preserve the compiler screen, and leave Dev Console usable.
+                String previousScreen;
+                Boolean menuReady = WaitForText(
+                    outputHandle,
+                    inputHandle,
+                    process,
+                    "Pick which script(s) to compile",
+                    60000,
+                    out previousScreen);
 
-                SendKey(inputHandle, 'A', 0);
-
-                String previousScreen = String.Empty;
-                Boolean successPromptSeen = false;
-                Boolean failurePromptSeen = false;
-                Boolean exitKeySent = false;
-
-                while (!process.HasExited)
+                if (!menuReady)
                 {
-                    String screen = ReadConsoleText(outputHandle);
+                    WriteLine(String.Empty);
+                    WriteLine("------------------------------------------------------------");
+                    WriteLine("COMPILATION FAILED");
 
-                    if (!String.IsNullOrEmpty(screen))
+                    if (!String.IsNullOrEmpty(previousScreen))
                     {
-                        EmitScreenDelta(previousScreen, screen);
-                        previousScreen = screen;
-
-                        if (!successPromptSeen &&
-                            screen.IndexOf(
-                                "Press enter to exit...",
-                                StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            successPromptSeen = true;
-                        }
-
-                        if (!failurePromptSeen &&
-                            screen.IndexOf(
-                                "Press R to retry or any other key to exit...",
-                                StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            failurePromptSeen = true;
-                        }
-
-                        if (!exitKeySent && successPromptSeen)
-                        {
-                            SendKey(inputHandle, '\r', VK_RETURN);
-                            exitKeySent = true;
-                        }
-                        else if (!exitKeySent && failurePromptSeen)
-                        {
-                            // Any key except R exits the failure screen.
-                            SendKey(inputHandle, 'Q', 0);
-                            exitKeySent = true;
-                        }
+                        WriteLine("Last Memoria.Compiler screen:");
+                        WriteRaw(previousScreen + Environment.NewLine);
+                        WriteLine(String.Empty);
                     }
 
-                    Thread.Sleep(75);
+                    WriteLine("Memoria.Compiler exited before its normal menu became available.");
+                    WriteLine("Restart aborted. Dev Console remains available.");
+                    WriteLine("Press [R] to start a fresh compiler process, or [ESC] to go back.");
+                    return;
+                }
+
+                Boolean compileFinished = false;
+
+                while (!compileFinished && !_disposed && !process.HasExited)
+                {
+                    // Memoria.Compiler is at its normal A/C/Q menu.
+                    SendKey(inputHandle, 'A', 0);
+
+                    Boolean successPromptSeen = false;
+                    Boolean failurePromptSeen = false;
+
+                    while (!_disposed && !process.HasExited)
+                    {
+                        String screen = ReadConsoleText(outputHandle);
+
+                        if (!String.IsNullOrEmpty(screen))
+                        {
+                            EmitScreenDelta(previousScreen, screen);
+                            previousScreen = screen;
+
+                            if (screen.IndexOf(
+                                    "Press enter to exit...",
+                                    StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                successPromptSeen = true;
+                                break;
+                            }
+
+                            // Memoria.Compiler Program.Main catches compile errors
+                            // and waits for R here. Keep THIS process alive.
+                            if (screen.IndexOf(
+                                    "Press R to retry",
+                                    StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                screen.IndexOf(
+                                    "Fail!",
+                                    StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                failurePromptSeen = true;
+                                break;
+                            }
+                        }
+
+                        Thread.Sleep(75);
+                    }
+
+                    if (successPromptSeen)
+                    {
+                        SendKey(inputHandle, '\r', VK_RETURN);
+                        success = true;
+                        compileFinished = true;
+                        break;
+                    }
+
+                    if (failurePromptSeen)
+                    {
+                        WriteLine(String.Empty);
+                        WriteLine("------------------------------------------------------------");
+                        WriteLine("COMPILATION FAILED");
+                        WriteLine("Restart aborted.");
+                        WriteLine("Fix the source, then press [R] to compile again or [ESC] to go back.");
+
+                        _retryRequested = false;
+                        _awaitingRetry = true;
+
+                        while (!_disposed && !process.HasExited && !_retryRequested)
+                            Thread.Sleep(50);
+
+                        if (_disposed || process.HasExited)
+                        {
+                            compileFinished = true;
+                            break;
+                        }
+
+                        _retryRequested = false;
+                        _awaitingRetry = false;
+
+                        // This exactly follows Memoria.Compiler's own retry loop:
+                        // R -> Program.Main loops -> Console.Clear() -> Compile()
+                        // -> A/C/Q menu is drawn again.
+                        SendKey(inputHandle, 'R', 0);
+
+                        previousScreen = String.Empty;
+
+                        Boolean retryMenuReady = WaitForText(
+                            outputHandle,
+                            inputHandle,
+                            process,
+                            "Pick which script(s) to compile",
+                            60000,
+                            out previousScreen);
+
+                        if (!retryMenuReady)
+                        {
+                            compileFinished = true;
+                            break;
+                        }
+
+                        // Menu is back. Outer loop sends A again.
+                        continue;
+                    }
+
+                    compileFinished = true;
                 }
 
                 // Final screen-buffer read before detaching.
@@ -185,8 +301,6 @@ namespace Memoria.DevConsole
                     previousScreen = finalScreen;
                 }
 
-                success = successPromptSeen && !failurePromptSeen;
-
                 WriteLine(String.Empty);
                 WriteLine("------------------------------------------------------------");
 
@@ -196,11 +310,11 @@ namespace Memoria.DevConsole
                     WriteLine(String.Empty);
                     WriteLine("Hard restarting FFIX...");
                 }
-                else
+                else if (!_awaitingRetry)
                 {
                     WriteLine("COMPILATION FAILED");
                     WriteLine("Restart aborted.");
-                    WriteLine("[ESC] Back");
+                    WriteLine("Fix the source, then press [R] to compile again or [ESC] to go back.");
                 }
             }
             catch (Exception ex)
@@ -237,6 +351,8 @@ namespace Memoria.DevConsole
                     }
                 }
 
+                _awaitingRetry = false;
+                _retryRequested = false;
                 _running = false;
 
                 Action<Boolean> completed = _completed;
@@ -246,34 +362,131 @@ namespace Memoria.DevConsole
             }
         }
 
-        private void WaitForText(
+        private Boolean WaitForText(
             IntPtr outputHandle,
+            IntPtr inputHandle,
             Process process,
             String expectedText,
-            Int32 timeoutMilliseconds)
+            Int32 timeoutMilliseconds,
+            out String lastScreen)
         {
             Stopwatch timer = Stopwatch.StartNew();
+            lastScreen = String.Empty;
+            Boolean waitingForRetryPromptToClear = false;
 
-            while (timer.ElapsedMilliseconds < timeoutMilliseconds)
+            while (!_disposed)
             {
-                if (process.HasExited)
-                    throw new InvalidOperationException(
-                        "Memoria.Compiler exited before showing its menu.");
-
                 String screen = ReadConsoleText(outputHandle);
 
                 if (!String.IsNullOrEmpty(screen))
                 {
+                    lastScreen = screen;
+
                     if (screen.IndexOf(expectedText, StringComparison.OrdinalIgnoreCase) >= 0)
-                        return;
+                    {
+                        _awaitingRetry = false;
+                        _retryRequested = false;
+                        EmitScreenDelta(String.Empty, screen);
+                        return true;
+                    }
+
+                    Boolean hasRetryPrompt =
+                        screen.IndexOf(
+                            "Press R to retry",
+                            StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        screen.IndexOf(
+                            "Press R to",
+                            StringComparison.OrdinalIgnoreCase) >= 0 &&
+                        screen.IndexOf(
+                            "retry",
+                            StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        screen.IndexOf(
+                            "Fail!",
+                            StringComparison.OrdinalIgnoreCase) >= 0;
+
+                    // After sending R, the old prompt can remain in the console
+                    // buffer for a few frames while Memoria.Compiler clears and
+                    // recompiles. Do not interpret that stale text as a second
+                    // failure until we have observed the prompt disappear once.
+                    if (waitingForRetryPromptToClear)
+                    {
+                        if (!hasRetryPrompt)
+                            waitingForRetryPromptToClear = false;
+                    }
+                    else if (hasRetryPrompt)
+                    {
+                        EmitScreenDelta(String.Empty, screen);
+
+                        WriteLine(String.Empty);
+                        WriteLine("------------------------------------------------------------");
+                        WriteLine("COMPILATION FAILED");
+                        WriteLine("Source compilation failed before the compiler menu opened.");
+                        WriteLine("Restart aborted. Dev Console remains available.");
+                        WriteLine("Fix the source, then press [R] to retry in the SAME compiler process.");
+                        WriteLine("[ESC] Back");
+
+                        _retryRequested = false;
+                        _awaitingRetry = true;
+
+                        // Keep this compiler process and its real console alive.
+                        // Memoria.Compiler already has a native retry loop; the
+                        // Dev Console's R key simply tells that loop to retry.
+                        while (!_disposed && !process.HasExited && !_retryRequested)
+                            Thread.Sleep(50);
+
+                        if (_disposed || process.HasExited)
+                        {
+                            _awaitingRetry = false;
+                            _retryRequested = false;
+                            return false;
+                        }
+
+                        _retryRequested = false;
+                        _awaitingRetry = false;
+
+                        SendKey(inputHandle, 'R', 0);
+
+                        waitingForRetryPromptToClear = true;
+                        lastScreen = String.Empty;
+                        timer.Reset();
+                        timer.Start();
+                        Thread.Sleep(100);
+                        continue;
+                    }
+                }
+
+                if (process.HasExited)
+                {
+                    String finalScreen = ReadConsoleText(outputHandle);
+
+                    if (!String.IsNullOrEmpty(finalScreen))
+                        lastScreen = finalScreen;
+
+                    if (!String.IsNullOrEmpty(lastScreen))
+                        EmitScreenDelta(String.Empty, lastScreen);
+
+                    _awaitingRetry = false;
+                    _retryRequested = false;
+                    return false;
+                }
+
+                // Do not time out while intentionally waiting for the user to
+                // fix source code. The timeout only applies while the compiler
+                // is actively trying to reach its menu.
+                if (!_awaitingRetry && timer.ElapsedMilliseconds >= timeoutMilliseconds)
+                {
+                    throw new TimeoutException(
+                        "Timed out waiting for the Memoria.Compiler menu.");
                 }
 
                 Thread.Sleep(50);
             }
 
-            throw new TimeoutException(
-                "Timed out waiting for the Memoria.Compiler menu.");
+            _awaitingRetry = false;
+            _retryRequested = false;
+            return false;
         }
+
 
         private void EmitScreenDelta(String previous, String current)
         {

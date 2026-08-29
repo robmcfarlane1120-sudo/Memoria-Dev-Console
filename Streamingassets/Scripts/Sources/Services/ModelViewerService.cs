@@ -123,6 +123,13 @@ namespace Memoria.DevConsole
                 // Dev Console disables HonoBehaviorSystem without changing UIManager.State. Drive ONLY the viewer here.
                 ModelViewerScene.Update();
 
+                // Memoria's Model Viewer lays its left/right panels out across a
+                // fixed ~2000-unit logical width. On narrower UI viewports (for
+                // example 1600x900), the outer edges are clipped. Reposition the
+                // panels after Memoria updates them so they remain inside the
+                // actual visible NGUI width without changing Memoria's own saved
+                // panel offsets.
+
                 Type viewerType = typeof(ModelViewerScene);
                 BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
 
