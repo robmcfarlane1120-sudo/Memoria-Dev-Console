@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -47,6 +47,15 @@ namespace Memoria.DevConsole
             }
         }
 
+        public IEnumerator DumpWorldMapTextures(Action<String> status)
+        {
+            if (_running) { Report(status, "Another asset dump is already running."); yield break; }
+            _running = true;
+            IEnumerator worker = new WorldMapTextureDumpOperation().Run(status);
+            try { while (worker.MoveNext()) yield return worker.Current; }
+            finally { (worker as IDisposable)?.Dispose(); _running = false; }
+        }
+
         public IEnumerator DumpModelTextures(Action<String> status)
         {
             if (_running)
@@ -89,6 +98,44 @@ namespace Memoria.DevConsole
             }
         }
 
+
+        public IEnumerator CutFieldComposite(Int32 fieldId, String imagePath, Action<String> status)
+        {
+            if (_running) { Report(status, "Another asset dump is already running."); yield break; }
+            _running = true;
+            try { FieldBackgroundDumpOperation.CutExistingComposite(fieldId, imagePath, status); }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[FIELD CUT] Failed field " + fieldId);
+                Report(status, "Composite cut FAILED: " + ex.Message);
+            }
+            finally { _running = false; }
+            yield return null;
+        }
+
+        public IEnumerator ExportFieldComposite(Int32 fieldId, Action<String> status)
+        {
+            if (_running)
+            {
+                Report(status, "Another asset dump is already running.");
+                yield break;
+            }
+            _running = true;
+            try
+            {
+                FieldBackgroundDumpOperation.ExportExistingComposite(fieldId, status);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[FIELD COMPOSITE] Failed field " + fieldId);
+                Report(status, "Composite FAILED: " + ex.Message);
+            }
+            finally
+            {
+                _running = false;
+            }
+            yield return null;
+        }
 
         public IEnumerator DumpCurrentBattleBackground(Action<String> status)
         {
@@ -170,7 +217,7 @@ namespace Memoria.DevConsole
             String rootName = SanitizeFileName(!String.IsNullOrEmpty(battleBackgroundName)
                 ? battleBackgroundName
                 : (String.IsNullOrEmpty(background.name) ? "BattleBackground" : background.name));
-            String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), OutputRootName);
+            String outputRoot = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), "Memoria Dev Console"), "Asset Dump"), OutputRootName);
             String outputDirectory = Path.Combine(outputRoot, "BattleMap_" + battleMapIndex.ToString("D4", CultureInfo.InvariantCulture) + "_" + rootName);
             String materialMapPath = Path.Combine(outputDirectory, "MaterialMap.csv");
 
@@ -263,6 +310,9 @@ namespace Memoria.DevConsole
                 "\r\nThe PNG filenames preserve the live Unity texture names used by this battle background.\r\n" +
                 "MaterialMap.csv records which renderer/material used each texture.\r\n");
 
+            // Additive diagnostics: original PNGs, material map and completion remain independent.
+            try { BattleBackgroundDiagnostics.Export(background, outputDirectory); }
+            catch (Exception ex) { Log.Error(ex, "[BATTLE BG DIAGNOSTICS] Diagnostics failed; original export is complete."); }
             Log.Message("[BATTLE BG DUMPER] Finished. Exported " + exported + " unique textures to " + outputDirectory);
             Report(status,
                 "Current Battle Background Dump COMPLETE\r\n" +
@@ -340,11 +390,11 @@ namespace Memoria.DevConsole
     {
 
         private const String OutputRootName = "FieldDumper_Output";
-        private const String CompleteMarkerName = "_COMPLETE.txt";
+        private const String CompleteMarkerName = "_COMPLETE_resources_v1.txt";
         private const String IndexFileName = "FieldIndex.csv";
         public IEnumerator Run(Action<String> status)
         {
-String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), OutputRootName);
+String outputRoot = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), "Memoria Dev Console"), "Asset Dump"), OutputRootName);
             String completeMarker = Path.Combine(outputRoot, CompleteMarkerName);
             String indexPath = Path.Combine(outputRoot, IndexFileName);
 
@@ -353,7 +403,7 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
             if (File.Exists(completeMarker))
             {
                 Log.Message($"[FIELD DUMPER] Already complete. Delete {completeMarker} to run it again.");
-                Report(status, "Field Background Dump already complete.\r\nDelete FieldDumper_Output\\_COMPLETE.txt to run the complete dump again.\r\nOutput: " + outputRoot);
+                Report(status, "Field Background Dump already complete.\r\nDelete Memoria Dev Console\\Asset Dump\\FieldDumper_Output\\_COMPLETE_resources_v1.txt to run the complete dump again.\r\nOutput: " + outputRoot);
                 yield break;
             }
 
@@ -387,18 +437,22 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
                     {
                         Directory.CreateDirectory(fieldFolder);
 
-                        // Resume behavior: a successfully-written BGX means this field was already exported.
-                        if (File.Exists(bgxPath))
+                        // Legacy BGX exports still need the additional native resources.
+                        if (File.Exists(bgxPath) && File.Exists(Path.Combine(fieldFolder, "_resources_v1.txt")))
                         {
                             skipped++;
                             WriteIndexLine(indexWriter, fieldId, fieldName, "SKIPPED", fieldFolderName);
                             continue;
                         }
 
+                        if (!File.Exists(bgxPath))
+                        {
                         BGSCENE_DEF scene = new BGSCENE_DEF(true);
                         scene.LoadResources(FieldMap.GetMapResourcePath(fieldName), fieldName);
 
                         ExportSceneWithCorrectPaths(scene, bgxPath);
+                        }
+                        ExportNativeResources(fieldName, fieldFolder);
 
                         completed++;
                         WriteIndexLine(indexWriter, fieldId, fieldName, "OK", fieldFolderName);
@@ -440,7 +494,7 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
 
         public IEnumerator RunSingle(Int32 fieldId, Action<String> status)
         {
-            String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), OutputRootName);
+            String outputRoot = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), "Memoria Dev Console"), "Asset Dump"), OutputRootName);
             Dictionary<Int32, String> fieldMap = GetInternalFieldMap();
             String fieldName;
             if (!fieldMap.TryGetValue(fieldId, out fieldName) || String.IsNullOrEmpty(fieldName) || fieldName == "invalidFieldMapID")
@@ -462,7 +516,8 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
                 BGSCENE_DEF scene = new BGSCENE_DEF(true);
                 scene.LoadResources(FieldMap.GetMapResourcePath(fieldName), fieldName);
                 ExportSceneWithCorrectPaths(scene, bgxPath);
-                Report(status, $"Field {fieldId} COMPLETE\r\n{fieldName}\r\nOutput: {fieldFolder}");
+                String resourceSummary = ExportNativeResources(fieldName, fieldFolder);
+                Report(status, $"Field {fieldId} COMPLETE\r\n{fieldName}\r\n{resourceSummary}\r\nOutput: {fieldFolder}");
             }
             catch (Exception ex)
             {
@@ -471,6 +526,460 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
             }
 
             yield return null;
+        }
+
+        // Uses the selected field's resource directory, never the current live field.
+        // Do not load TCB into global PSX VRAM during an export: preserve the raw bank instead.
+        private static String ExportNativeResources(String fieldName, String folder)
+        {
+            String marker = Path.Combine(folder, "_resources_v1.txt");
+            if (File.Exists(marker)) File.Delete(marker);
+            String prefix = FieldMap.GetMapResourcePath(fieldName);
+            String bundlePrefix = "Assets/Resources/" + prefix;
+            HashSet<String> names = new HashSet<String>(StringComparer.OrdinalIgnoreCase);
+            names.Add(fieldName + ".bgs.bytes");
+            names.Add(fieldName + ".bgi.bytes");
+            names.Add("spt.tcb.bytes");
+            names.Add("atlas.png");
+            names.Add("atlas_a.jpg");
+            // Cache bundle inventories across complete-game fields; resolve contents via
+            // AssetManager so mod priority remains identical to the game's loaders.
+            foreach (String asset in GetFieldAssetNames())
+                if (asset.StartsWith(bundlePrefix, StringComparison.OrdinalIgnoreCase))
+                    names.Add(asset.Substring(bundlePrefix.Length));
+            foreach (AssetManager.AssetFolder mod in AssetManager.FolderHighToLow)
+            {
+                String directory = Path.Combine(mod.FolderPath, "StreamingAssets/Assets/Resources/" + prefix);
+                if (!Directory.Exists(directory)) continue;
+                foreach (String file in Directory.GetFiles(directory, "*", SearchOption.AllDirectories))
+                    names.Add(file.Substring(directory.Length).TrimStart('/', '\\').Replace('\\', '/'));
+            }
+            // Runtime field SPS textures can be remapped to a shared FieldSPS image.
+            // Include only references made by definitions discovered in this field.
+            foreach (String definition in names.ToArray())
+            {
+                Int32 spsId;
+                if (!definition.EndsWith(".sps.bytes", StringComparison.OrdinalIgnoreCase) ||
+                    !Int32.TryParse(Path.GetFileName(definition).Split('.')[0], out spsId)) continue;
+                String mapping = SPSConst.GetFieldSPSTexture(spsId);
+                if (mapping != null)
+                    names.Add("FieldSPS/" + mapping.Split('/')[1] + ".png");
+            }
+            List<String> report = new List<String>();
+            Int32 exported = 0, unavailable = 0, errors = 0;
+            foreach (String name in names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase))
+            {
+                // Inventory names come from assets, so restrict them to this output folder.
+                if (name.Split('/', '\\').Any(part => part == "..") || Path.IsPathRooted(name))
+                    throw new IOException("Unsafe field asset name: " + name);
+                String path = name.StartsWith("FieldSPS/", StringComparison.Ordinal) ? "FieldMaps/" + name : prefix + name;
+                String target = Path.Combine(folder, name);
+                try
+                {
+                    Byte[] bytes;
+                    if (name.EndsWith(".png", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Texture2D texture = AssetManager.Load<Texture2D>(path.Substring(0, path.LastIndexOf('.')), true);
+                        if (texture == null) { unavailable++; report.Add("UNAVAILABLE " + path); continue; }
+                        Texture2D readable = TextureHelper.CopyAsReadable(texture);
+                        try { bytes = name.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ? readable.EncodeToJPG() : readable.EncodeToPNG(); }
+                        finally { if (!ReferenceEquals(readable, texture)) UnityEngine.Object.Destroy(readable); }
+                    }
+                    else
+                    {
+                        if (path.EndsWith(".bytes", StringComparison.OrdinalIgnoreCase)) path = path.Substring(0, path.Length - 6);
+                        bytes = AssetManager.LoadBytes(path, true);
+                        if (bytes == null) { unavailable++; report.Add("UNAVAILABLE " + path); continue; }
+                    }
+                    Directory.CreateDirectory(Path.GetDirectoryName(target));
+                    File.WriteAllBytes(target, bytes);
+                    exported++;
+                    report.Add("EXPORTED " + name + " (" + bytes.Length + " bytes)");
+                }
+                catch (Exception ex) { errors++; report.Add("ERROR " + name + ": " + ex.Message); }
+            }
+            // Field Creator uses ReadData/WriteData plus WavefrontObject.LoadFromBGI.
+            // Keep the original BGI bytes intact; OBJ is the additional editable form.
+            try
+            {
+                Byte[] bytes = AssetManager.LoadBytes(prefix + fieldName + ".bgi", true);
+                if (bytes != null)
+                {
+                    BGI_DEF bgi = new BGI_DEF();
+                    using (BinaryReader reader = new BinaryReader(new MemoryStream(bytes))) bgi.ReadData(reader);
+                    WavefrontObject obj = new WavefrontObject();
+                    obj.LoadFromBGI(bgi);
+                    File.WriteAllText(Path.Combine(folder, fieldName + ".obj"), obj.GenerateFile(fieldName));
+                    exported++;
+                    report.Add("EXPORTED " + fieldName + ".obj (Memoria walkmesh conversion)");
+                }
+                else { unavailable++; report.Add("UNAVAILABLE walkmesh OBJ: no BGI"); }
+            }
+            catch (Exception ex) { errors++; report.Add("ERROR walkmesh OBJ: " + ex.Message); }
+            String summary = "Resources exported: " + exported + "; unavailable: " + unavailable + "; errors: " + errors;
+            report.Insert(0, summary);
+            File.WriteAllLines(Path.Combine(folder, "ResourceExport.txt"), report.ToArray());
+            Log.Message("[FIELD DUMPER] " + fieldName + ": " + summary);
+            if (errors != 0) throw new IOException(summary + ". See ResourceExport.txt");
+            File.WriteAllText(Path.Combine(folder, "_resources_v1.txt"), summary);
+            FieldNativeAtlas.WriteDepthReport(folder, fieldName);
+            return summary;
+        }
+
+        private static HashSet<String> _fieldAssetNames;
+        private static HashSet<String> GetFieldAssetNames()
+        {
+            if (_fieldAssetNames != null) return _fieldAssetNames;
+            HashSet<String> names = new HashSet<String>(StringComparer.OrdinalIgnoreCase);
+            foreach (AssetManager.AssetFolder mod in AssetManager.FolderHighToLow)
+                foreach (var bundle in mod.DictAssetBundleRefs.Values)
+                    if (bundle.assetBundle != null)
+                        foreach (String asset in bundle.assetBundle.GetAllAssetNames())
+                            if (asset.StartsWith("Assets/Resources/FieldMaps/", StringComparison.OrdinalIgnoreCase))
+                                names.Add(asset);
+            _fieldAssetNames = names;
+            return names;
+        }
+
+        // Preview-only compositor. Reads an existing BGX/PNG export; never modifies source layers.
+        // Uses camera 0, static overlay placement and ordinary alpha compositing.
+        // PSX additive/subtractive shader modes and animated frames are not faithfully reproduced.
+        public static void ExportExistingComposite(Int32 fieldId, Action<String> status)
+        {
+            String root = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
+                "Memoria Dev Console"), "Asset Dump"), OutputRootName);
+            String folder = Path.Combine(root, "Field_" + fieldId.ToString("D4"));
+            if (!Directory.Exists(folder))
+                throw new Exception("Field not exported yet. Use Export by Field ID first: " + folder);
+            String[] bgxFiles = Directory.GetFiles(folder, "*.bgx");
+            if (bgxFiles.Length != 1)
+                throw new Exception("Expected exactly one BGX file in " + folder);
+            String[] lines = File.ReadAllLines(bgxFiles[0]);
+            List<CompositeOverlay> overlays = new List<CompositeOverlay>();
+            CompositeOverlay current = null;
+            foreach (String raw in lines)
+            {
+                String line = raw.Trim();
+                if (line == "OVERLAY")
+                {
+                    current = new CompositeOverlay();
+                    overlays.Add(current);
+                }
+                else if (line == "ANIMATION" || line == "CAMERA")
+                    current = null;
+                else if (current != null)
+                {
+                    if (line.StartsWith("CameraId:"))
+                        current.Camera = Int32.Parse(line.Substring(9).Trim(), CultureInfo.InvariantCulture);
+                    else if (line.StartsWith("Position:"))
+                    {
+                        String[] parts = line.Substring(9).Split(',');
+                        current.X = Int32.Parse(parts[0].Trim(), CultureInfo.InvariantCulture);
+                        current.Y = Int32.Parse(parts[1].Trim(), CultureInfo.InvariantCulture);
+                        current.Z = Int32.Parse(parts[2].Trim(), CultureInfo.InvariantCulture);
+                    }
+                    else if (line.StartsWith("Size:"))
+                    {
+                        String[] parts = line.Substring(5).Split(',');
+                        current.Width = Int32.Parse(parts[0].Trim(), CultureInfo.InvariantCulture);
+                        current.Height = Int32.Parse(parts[1].Trim(), CultureInfo.InvariantCulture);
+                    }
+                    else if (line.StartsWith("Image:"))
+                        current.Image = line.Substring(6).Trim();
+                    else if (line.StartsWith("Shader:")) { String shader = line.Substring(7).Trim(); current.Blend = FieldCompositeBlending.Parse(shader); current.PreserveEffect = FieldCompositeBlending.IsEffectShader(shader); }
+                }
+            }
+            // Per-field overlay exclusions for editing composites. This file is optional,
+            // and affects only the preview compositor, never the normal field export.
+            // Indices correspond to the trailing _N in the exported overlay PNG name.
+            String exclusionsPath = Path.Combine(folder, "Composite_ExcludedOverlays.txt");
+            HashSet<Int32> excludedIndices = new HashSet<Int32>();
+            if (File.Exists(exclusionsPath))
+            {
+                foreach (String rawLine in File.ReadAllLines(exclusionsPath))
+                {
+                    String cleanLine = rawLine.Split('#')[0].Trim();
+                    if (cleanLine.Length == 0) continue;
+                    foreach (String token in cleanLine.Split(new Char[] { ',', ';', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        Int32 index;
+                        if (!Int32.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out index) || index < 0)
+                            throw new Exception("Invalid overlay index '" + token + "' in " + exclusionsPath);
+                        excludedIndices.Add(index);
+                    }
+                }
+            }
+            overlays = overlays.Where(o => o.Camera == 0 && !String.IsNullOrEmpty(o.Image) &&
+                !IsExcludedCompositeOverlay(o.Image, excludedIndices))
+                .OrderByDescending(o => o.Z).ToList();
+            if (overlays.Count == 0)
+                throw new Exception("No camera-0 overlay images found in BGX.");
+            List<Texture2D> textures = new List<Texture2D>();
+            Texture2D output = null;
+            try
+            {
+                // Derive the exported texture scale from BGX overlay dimensions.
+                // For example Field 250 exports 1920x1024 from BGX 480x256 (4x),
+                // so using a fixed 2x multiplier misaligns the overlays.
+                Int32 scale = 0;
+                Int32 minX = 0, minY = 0, maxX = 0, maxY = 0;
+                foreach (CompositeOverlay o in overlays)
+                {
+                    String file = Path.Combine(folder, o.Image);
+                    if (!File.Exists(file)) throw new Exception("Missing overlay: " + o.Image);
+                    Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    if (!tex.LoadImage(File.ReadAllBytes(file)))
+                        throw new Exception("Unable to decode overlay: " + o.Image);
+                    if (o.Width <= 0 || o.Height <= 0 || tex.width % o.Width != 0 || tex.height % o.Height != 0 ||
+                        tex.width / o.Width != tex.height / o.Height)
+                        throw new Exception("Overlay dimensions do not match BGX: " + o.Image);
+                    Int32 overlayScale = tex.width / o.Width;
+                    if (scale == 0) scale = overlayScale;
+                    else if (scale != overlayScale)
+                        throw new Exception("Inconsistent overlay export scale: " + o.Image);
+                    textures.Add(tex);
+                    Int32 x = o.X * scale, y = o.Y * scale;
+                    minX = Math.Min(minX, x); minY = Math.Min(minY, y);
+                    maxX = Math.Max(maxX, x + tex.width);
+                    maxY = Math.Max(maxY, y + tex.height);
+                }
+                Int32 width = maxX - minX, height = maxY - minY;
+                if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
+                    throw new Exception("Invalid composite dimensions: " + width + "x" + height);
+                Color32[] pixels = new Color32[width * height];
+                for (Int32 i = 0; i < overlays.Count; i++)
+                {
+                    CompositeOverlay o = overlays[i];
+                    Texture2D tex = textures[i];
+                    Color32[] src = tex.GetPixels32();
+                    Int32 left = o.X * scale - minX;
+                    Int32 top = o.Y * scale - minY;
+                    FieldCompositeBlending.CompositeOnto(pixels, width, height, src,
+                        tex.width, tex.height, left, top, o.Blend);
+                }
+                output = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                output.SetPixels32(pixels);
+                output.Apply(false, false);
+                String path = Path.Combine(folder, "Field_" + fieldId.ToString("D4") + "_Composite_PREVIEW.png");
+                File.WriteAllBytes(path, output.EncodeToPNG());
+                Report(status, "Composite preview exported: " + path + "\r\n" +
+                    "Detected overlay scale: " + scale + "x\r\n" +
+                    "Excluded overlays: " + (excludedIndices.Count == 0 ? "none" : String.Join(", ", excludedIndices.OrderBy(n => n).Select(n => n.ToString()).ToArray())) + "\r\n" +
+                    "Edit Composite_ExcludedOverlays.txt in the field folder to change exclusions. " +
+                    "Camera 0 only; static overlays with BGX blend modes. Runtime animation/tint may differ. Preserve original PNGs/BGX.");
+            }
+            finally
+            {
+                if (output != null) UnityEngine.Object.Destroy(output);
+                foreach (Texture2D tex in textures) UnityEngine.Object.Destroy(tex);
+            }
+        }
+
+        // Rebuilds editable PNG layers from a single image. Never writes into the
+        // original Field_XXXX export. Alpha comes from the ORIGINAL layer PNGs.
+        public static void CutExistingComposite(Int32 fieldId, String imagePath, Action<String> status)
+        {
+            if (String.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
+                throw new Exception("Selected PNG does not exist: " + imagePath);
+            String root = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
+                "Memoria Dev Console"), "Asset Dump"), OutputRootName);
+            String folder = Path.Combine(root, "Field_" + fieldId.ToString("D4"));
+            String missingTemplate = "Template files are missing. Re-export field " + fieldId + " using [1] or [2], then try again with the same PNG in FieldDumper_Input.";
+            if (!Directory.Exists(folder)) throw new Exception(missingTemplate);
+            if (Directory.GetFiles(folder,"*.bgs.bytes").Length == 0 || !File.Exists(Path.Combine(folder,"atlas.png")))
+                throw new Exception(missingTemplate);
+            String[] bgxFiles = Directory.GetFiles(folder, "*.bgx");
+            if (bgxFiles.Length != 1) throw new Exception(missingTemplate);
+            List<CompositeOverlay> overlays = new List<CompositeOverlay>();
+            CompositeOverlay current = null;
+            foreach (String raw in File.ReadAllLines(bgxFiles[0]))
+            {
+                String line = raw.Trim();
+                if (line == "OVERLAY") { current = new CompositeOverlay(); overlays.Add(current); }
+                else if (line == "ANIMATION" || line == "CAMERA") current = null;
+                else if (current != null)
+                {
+                    if (line.StartsWith("CameraId:")) current.Camera = Int32.Parse(line.Substring(9).Trim(), CultureInfo.InvariantCulture);
+                    else if (line.StartsWith("Position:"))
+                    {
+                        String[] v = line.Substring(9).Split(',');
+                        current.X = Int32.Parse(v[0].Trim(), CultureInfo.InvariantCulture);
+                        current.Y = Int32.Parse(v[1].Trim(), CultureInfo.InvariantCulture);
+                        current.Z = Int32.Parse(v[2].Trim(), CultureInfo.InvariantCulture);
+                    }
+                    else if (line.StartsWith("Size:"))
+                    {
+                        String[] v = line.Substring(5).Split(',');
+                        current.Width = Int32.Parse(v[0].Trim(), CultureInfo.InvariantCulture);
+                        current.Height = Int32.Parse(v[1].Trim(), CultureInfo.InvariantCulture);
+                    }
+                    else if (line.StartsWith("Image:")) current.Image = line.Substring(6).Trim();
+                    else if (line.StartsWith("Shader:")) { String shader = line.Substring(7).Trim(); current.Blend = FieldCompositeBlending.Parse(shader); current.PreserveEffect = FieldCompositeBlending.IsEffectShader(shader); }
+                }
+            }
+            String exclusionsPath = Path.Combine(folder, "Composite_ExcludedOverlays.txt");
+            HashSet<Int32> excluded = new HashSet<Int32>();
+            if (File.Exists(exclusionsPath))
+                foreach (String raw in File.ReadAllLines(exclusionsPath))
+                {
+                    String clean = raw.Split('#')[0].Trim();
+                    foreach (String token in clean.Split(new Char[] { ',', ';', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        Int32 n;
+                        if (!Int32.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out n) || n < 0)
+                            throw new Exception("Invalid exclusion: " + token);
+                        excluded.Add(n);
+                    }
+                }
+            List<CompositeOverlay> included = overlays.Where(o => o.Camera == 0 && !String.IsNullOrEmpty(o.Image) &&
+                !IsExcludedCompositeOverlay(o.Image, excluded)).ToList();
+            if (included.Count == 0) throw new Exception("No included camera-0 overlays found.");
+            List<Texture2D> loaded = new List<Texture2D>();
+            Texture2D composite = null;
+            try
+            {
+                Int32 scale = 0, minX = 0, minY = 0, maxX = 0, maxY = 0;
+                Dictionary<String, Texture2D> original = new Dictionary<String, Texture2D>();
+                foreach (CompositeOverlay o in included)
+                {
+                    String file = Path.Combine(folder, o.Image);
+                    if (!File.Exists(file)) throw new Exception("Missing original layer: " + o.Image);
+                    Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                    if (!tex.LoadImage(File.ReadAllBytes(file))) throw new Exception("Cannot decode: " + o.Image);
+                    loaded.Add(tex);
+                    if (o.Width <= 0 || o.Height <= 0 || tex.width % o.Width != 0 || tex.height % o.Height != 0 || tex.width / o.Width != tex.height / o.Height)
+                        throw new Exception("BGX size mismatch: " + o.Image);
+                    Int32 ratio = tex.width / o.Width;
+                    if (scale == 0) scale = ratio;
+                    else if (scale != ratio) throw new Exception("Inconsistent scale: " + o.Image);
+                    original[o.Image] = tex;
+                    minX = Math.Min(minX, o.X * scale);
+                    minY = Math.Min(minY, o.Y * scale);
+                    maxX = Math.Max(maxX, o.X * scale + tex.width);
+                    maxY = Math.Max(maxY, o.Y * scale + tex.height);
+                }
+                Int32 width = maxX - minX, height = maxY - minY;
+                if (width <= 0 || height <= 0 || width > 8192 || height > 8192)
+                    throw new Exception("Invalid canvas bounds.");
+                composite = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (!composite.LoadImage(File.ReadAllBytes(imagePath))) throw new Exception("Unable to decode selected PNG.");
+                Int32 inputWidth = composite.width, inputHeight = composite.height;
+                Boolean resized = inputWidth != width || inputHeight != height;
+                Report(status, "Preparing cut: " + inputWidth + "x" + inputHeight + " -> " + width + "x" + height +
+                    (resized ? ". Resizing PNG to the field canvas..." : ". PNG already matches the field canvas."));
+                Color32[] source = FieldCompositeResampler.Resize(composite.GetPixels32(), inputWidth, inputHeight, width, height);
+                Color32[] reference = new Color32[width * height];
+                foreach (CompositeOverlay layer in included.OrderByDescending(o => o.Z))
+                {
+                    Texture2D texture = original[layer.Image];
+                    FieldCompositeBlending.CompositeOnto(reference, width, height, texture.GetPixels32(),
+                        texture.width, texture.height, layer.X * scale - minX, layer.Y * scale - minY, layer.Blend);
+                }
+                String finalOutputDir = Path.Combine(root, "Field_" + fieldId.ToString("D4") + "_Cut_" + DateTime.Now.ToString("yyyyMMdd_HHmmss_fff"));
+                String outputDir = Path.Combine(root, "Field_" + fieldId.ToString("D4") + "_Preparing_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(outputDir);
+                String editingDir = Path.Combine(outputDir, "EditingReferences");
+                Directory.CreateDirectory(editingDir);
+                if (resized)
+                {
+                    Texture2D prepared = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                    try
+                    {
+                        prepared.SetPixels32(source);
+                        prepared.Apply(false, false);
+                        File.WriteAllBytes(Path.Combine(editingDir, "Field_" + fieldId.ToString("D4") + "_Composite_PREVIEW.png"), prepared.EncodeToPNG());
+                    }
+                    finally { UnityEngine.Object.Destroy(prepared); }
+                }
+                foreach (CompositeOverlay o in overlays)
+                {
+                    if (String.IsNullOrEmpty(o.Image)) continue;
+                    String sourceFile = Path.Combine(folder, o.Image);
+                    if (!File.Exists(sourceFile)) throw new Exception("Missing original: " + o.Image);
+                    String destination = Path.Combine(editingDir, o.Image);
+                    if (o.Camera != 0 || IsExcludedCompositeOverlay(o.Image, excluded) || o.PreserveEffect)
+                    {
+                        File.Copy(sourceFile, destination, false);
+                        continue;
+                    }
+                    Texture2D old = original[o.Image];
+                    Color32[] oldPixels = old.GetPixels32();
+                    Color32[] result = new Color32[oldPixels.Length];
+                    Int32 left = o.X * scale - minX, top = o.Y * scale - minY;
+                    for (Int32 sy = 0; sy < old.height; sy++)
+                    {
+                        Int32 screenY = top + old.height - 1 - sy;
+                        // GetPixels32 uses bottom-left origin; screenY is measured from the top.
+                        // Convert to bottom-left source coordinates without flipping the original alpha mask.
+                        Int32 sourceY = height - 1 - screenY;
+                        for (Int32 sx = 0; sx < old.width; sx++)
+                        {
+                            Int32 index = sy * old.width + sx;
+                            Byte alpha = oldPixels[index].a;
+                            if (alpha == 0) { result[index] = oldPixels[index]; continue; }
+                            Int32 screenX = left + sx;
+                            Int32 at = sourceY * width + screenX;
+                            result[index] = FieldCompositeBlending.ApplyArtworkDelta(oldPixels[index], reference[at], source[at]);
+                        }
+                    }
+                    Texture2D cut = new Texture2D(old.width, old.height, TextureFormat.RGBA32, false);
+                    try { cut.SetPixels32(result); cut.Apply(false, false); File.WriteAllBytes(destination, cut.EncodeToPNG()); }
+                    finally { UnityEngine.Object.Destroy(cut); }
+                }
+                File.Copy(bgxFiles[0], Path.Combine(editingDir, Path.GetFileName(bgxFiles[0]) + ".reference"));
+
+                if (File.Exists(exclusionsPath)) File.Copy(exclusionsPath, Path.Combine(editingDir, "Composite_ExcludedOverlays.txt"));
+                String nativeSummary = FieldNativeAtlas.Export(folder, outputDir, Path.GetFileNameWithoutExtension(bgxFiles[0]), source, reference, width, height, scale, minX, minY, excluded);
+                File.WriteAllText(Path.Combine(outputDir, "START_HERE.txt"),
+                    "NATIVE FIELD CUT OUTPUT\r\n\r\n" +
+                    "NativeField/ - install the CONTENTS of this folder into the target field resource folder.\r\n" +
+                    "It contains the rebuilt atlas and unchanged BGS/BGI/support assets. No runtime C# is required.\r\n" +
+                    "Remove the target field's previous active .bgx override so Memoria loads BGS.\r\n" +
+                    "For a custom field, rename the main BGS/BGI to its registered field name.\r\n" +
+                    "See NativeField/INSTALL.txt for tile-size requirements and installation details.\r\n" +
+                    "If CustomFieldGeometry exists, use its BGS for renamed custom fields; keep NativeField's BGS for the original field name.\r\n\r\n" +
+                    "EditingReferences/ - layer PNGs and flattened .bgx.reference for inspection only.\r\n" +
+                    "Do not install this folder or rename its reference to an active BGX; that restores flat depth.\r\n\r\n" +
+                    "Source artwork: " + imagePath + "\r\nInput: " + inputWidth + "x" + inputHeight +
+                    "\r\nCanvas: " + width + "x" + height + "\r\nScale: " + scale +
+                    "\r\n" + (resized ? "Artwork resized with bilinear filtering. Different aspect ratios stretch to fit." : "Artwork already matched the source canvas.") +
+                    "\r\nArtwork RGB changes are applied relative to the source composite. Original masks and effect tiles are retained.\r\n" +
+                    "This preserves geometry; it does not create new walkmesh or reconstruct newly revealed hidden artwork.\r\n");
+                Directory.Move(outputDir, finalOutputDir);
+                nativeSummary = nativeSummary.Replace(outputDir, finalOutputDir);
+                Report(status, "Recut complete. Press O to open the output folder.\r\nInstall the contents of NativeField. EditingReferences is for reference only.\r\n" + finalOutputDir + "\r\n" +
+                    nativeSummary + "\r\n" +
+                    "Input: " + inputWidth + "x" + inputHeight + " -> " + width + "x" + height + " canvas\r\n" +
+                    "BGS depths/geometry preserved. Effect textures unchanged. No additional C# required.\r\n" +
+                    "Install NativeField contents; remove the destination's older .bgx override.\r\n" +
+                    "Layer PNGs and flattened BGX reference are in EditingReferences (do not install).");
+            }
+            finally
+            {
+                if (composite != null) UnityEngine.Object.Destroy(composite);
+                foreach (Texture2D tex in loaded) UnityEngine.Object.Destroy(tex);
+            }
+        }
+
+        private static Boolean IsExcludedCompositeOverlay(String imageName, HashSet<Int32> excluded)
+        {
+            if (excluded.Count == 0) return false;
+            String basename = Path.GetFileNameWithoutExtension(imageName);
+            Int32 separator = basename.LastIndexOf('_');
+            if (separator < 0) return false;
+            Int32 index;
+            return Int32.TryParse(basename.Substring(separator + 1), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out index) && excluded.Contains(index);
+        }
+
+        private sealed class CompositeOverlay
+        {
+            public Int32 Camera;
+            public Int32 X, Y, Z;
+            public Int32 Width, Height;
+            public String Image;
+            public FieldCompositeBlendMode Blend;
+            public Boolean PreserveEffect;
         }
 
         private static Dictionary<Int32, String> GetInternalFieldMap()
@@ -608,7 +1117,7 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
         }
         public IEnumerator Run(Action<String> status)
         {
-String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), OutputRootName);
+String outputRoot = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), "Memoria Dev Console"), "Asset Dump"), OutputRootName);
             String completeMarker = Path.Combine(outputRoot, CompleteMarkerName);
             String indexPath = Path.Combine(outputRoot, IndexFileName);
             Directory.CreateDirectory(outputRoot);
@@ -616,7 +1125,7 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
             if (File.Exists(completeMarker))
             {
                 Log.Message($"[ASSET DUMPER] Already complete. Delete {completeMarker} to run it again.");
-                Report(status, "2D Texture Dump already complete.\r\nDelete 2D Texture Dump Output\\_COMPLETE.txt to run the complete dump again.\r\nOutput: " + outputRoot);
+                Report(status, "2D Texture Dump already complete.\r\nDelete Memoria Dev Console\\Asset Dump\\2D Texture Dump Output\\_COMPLETE.txt to run the complete dump again.\r\nOutput: " + outputRoot);
                 yield break;
             }
 
@@ -722,7 +1231,7 @@ String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory),
                 yield break;
             }
 
-            String outputRoot = Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), OutputRootName);
+            String outputRoot = Path.Combine(Path.Combine(Path.Combine(Path.GetFullPath(Environment.CurrentDirectory), "Memoria Dev Console"), "Asset Dump"), OutputRootName);
             Dictionary<Int32, ModelNameInfo> enemyNames = BuildEnemyNameMap();
             ModelNameInfo nameInfo;
             enemyNames.TryGetValue(modelId, out nameInfo);

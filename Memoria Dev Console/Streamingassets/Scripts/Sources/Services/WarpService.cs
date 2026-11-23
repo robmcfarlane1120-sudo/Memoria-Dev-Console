@@ -46,6 +46,7 @@ namespace Memoria.DevConsole
                 // Normalize only the state Story Warper owns. Inventory and arbitrary
                 // globals/custom quest flags are deliberately preserved so mod quest
                 // progress survives sequential story warps.
+                SceneTransitionAudio.Prepare();
                 FF9StateSystem.EventState.ScenarioCounter = scenario;
                 FF9StateSystem.EventState.FieldEntrance = 0;
                 FF9StateSystem.Common.FF9.fldMapNo = (Int16)fieldId;

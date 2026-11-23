@@ -24,7 +24,7 @@ namespace Memoria.DevConsole
             {
                 String freshDump = Path.Combine(Environment.CurrentDirectory, "AudioMetaDump");
                 if (File.Exists(Path.Combine(freshDump, "OrdinaryBattleSoundUsage.tsv"))) return freshDump;
-                return Path.Combine(Path.Combine(Environment.CurrentDirectory, "Memoria Dev Console"), "SoundData");
+                return Path.Combine(Path.Combine(Path.Combine(Environment.CurrentDirectory, "Memoria Dev Console"), "FF9_Data"), "SoundData");
             }
         }
 

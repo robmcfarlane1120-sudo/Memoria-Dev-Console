@@ -1,5 +1,7 @@
-﻿using System;
+using System;
 using System.Collections;
+using System.Collections.Generic;
+using System.Reflection;
 using Memoria.Prime;
 using UnityEngine;
 
@@ -7,6 +9,8 @@ namespace Memoria.DevConsole
 {
     public sealed class DevConsoleController : MonoBehaviour
     {
+        private WorldEntranceEditorService _worldEntranceEditor;
+        private BattleSceneEditorService _battleSceneEditor;
         private LiveLogService _logService;
         private NativeConsoleWindow _window;
         private CompileService _compileService;
@@ -16,16 +20,25 @@ namespace Memoria.DevConsole
         private AssetDumpService _assetDumpService;
         private WarpService _warpService;
         private SoundBrowserService _soundBrowserService;
+        private SoundBrowserView _soundBrowserView;
+
+        private static readonly FieldInfo UpcomingMusic = typeof(MusicPlayer)
+            .GetField("upcomingSoundProfile", BindingFlags.Instance | BindingFlags.NonPublic);
+        private static readonly FieldInfo DispatchMusic = typeof(AllSoundDispatchPlayer)
+            .GetField("musicImmediateDB", BindingFlags.Instance | BindingFlags.NonPublic);
+        private readonly HashSet<Int32> _pausedGameMusic = new HashSet<Int32>();
 
         private Boolean _visible;
         private String _lastNativeError;
 
         private volatile Boolean _compileRequested;
         private volatile Boolean _modelViewerToggleRequested;
+        private volatile Int32 _viewerKindRequested;
         private volatile Boolean _hardResetRequested;
         private volatile Boolean _resetToLauncherRequested;
         private volatile Int32 _assetDumpRequested;
         private volatile Int32 _assetLookupId = -1;
+        private String _assetCutImagePath;
         private volatile Boolean _warpRequested;
         private StoryWarpPreset _warpPreset;
         private volatile Boolean _soundCatalogRequested;
@@ -40,6 +53,10 @@ namespace Memoria.DevConsole
         private volatile Boolean _restartPending;
         private DateTime _restartNotBeforeUtc = DateTime.MinValue;
 
+        private volatile Boolean _fieldStateMoveBackwardRequested;
+        private volatile Boolean _fieldStateMoveForwardRequested;
+        private volatile Boolean _fieldStateSetCheckpointRequested;
+        private volatile Boolean _fieldStateLoadCheckpointRequested;
         private volatile Boolean _saveStateCaptureRequested;
         private String _saveStateCaptureTitle;
         private volatile Boolean _saveStateLoadRequested;
@@ -48,7 +65,10 @@ namespace Memoria.DevConsole
         private String _saveStateDeleteId;
         private volatile Boolean _saveStateListRequested;
 
+        private volatile Boolean _shuttingDown;
         private Boolean _runtimeFreezeApplied;
+        private Boolean _viewerExitInputPending;
+        private Int32 _viewerExitFrame;
         private UIKeyTrigger _frozenUiKeyTrigger;
         private Boolean _savedUiKeyTriggerEnabled;
         private HonoBehaviorSystem _frozenHonoSystem;
@@ -64,6 +84,7 @@ namespace Memoria.DevConsole
                 _window = new NativeConsoleWindow();
                 _window.CompileRestartRequested += OnCompileRestartRequested;
                 _window.ModelViewerRequested += OnModelViewerRequested;
+                _window.ViewerRequested += OnViewerRequested;
                 _window.HardResetRequested += OnHardResetRequested;
                 _window.ResetToLauncherRequested += OnResetToLauncherRequested;
                 _window.FieldStateMoveBackwardRequested += OnFieldStateMoveBackwardRequested;
@@ -71,11 +92,17 @@ namespace Memoria.DevConsole
             _window.FieldStateSetCheckpointRequested += OnFieldStateSetCheckpointRequested;
             _window.FieldStateLoadCheckpointRequested += OnFieldStateLoadCheckpointRequested;
                                 _window.FieldStatePageOpened += OnFieldStatePageOpened;
-                _window.FieldBackgroundDumpRequested += OnFieldBackgroundDumpRequested;
+                _window.CurrentFieldDumpRequested += OnCurrentFieldDumpRequested;
                 _window.TextureDumpRequested += OnTextureDumpRequested;
                 _window.FieldBackgroundByIdRequested += OnFieldBackgroundByIdRequested;
+                _window.FieldCompositeByIdRequested += OnFieldCompositeByIdRequested;
+                _window.FieldCompositeCutRequested += OnFieldCompositeCutRequested;
                 _window.TextureByModelIdRequested += OnTextureByModelIdRequested;
+                _window.FbxByModelIdRequested += OnFbxByModelIdRequested;
                 _window.CurrentBattleBackgroundDumpRequested += OnCurrentBattleBackgroundDumpRequested;
+                _window.BattleScriptDumpRequested += OnBattleScriptDumpRequested;
+                _window.SfxDumpRequested += OnSfxDumpRequested;
+                _window.WorldMapTextureDumpRequested += OnWorldMapTextureDumpRequested;
                 _window.WarpRequested += OnWarpRequested;
                 _window.SoundBrowserOpened += OnSoundBrowserOpened;
                 _window.SoundPreviewRequested += OnSoundPreviewRequested;
@@ -92,6 +119,7 @@ namespace Memoria.DevConsole
                     OnCompileCompleted);
 
                 _fieldStateService = new FieldStateService();
+                _fieldStateService.BeforeSnapshotLoad += PrepareForSnapshotLoad;
                 _fieldStateService.Initialize();
                 _modelViewerService = new ModelViewerService(_fieldStateService);
                 _resolutionUiSyncService = new ResolutionUiSyncService();
@@ -102,6 +130,8 @@ namespace Memoria.DevConsole
                 if (!_window.Start())
                     Log.Error("[Dev Console] Native menu window thread failed to start.");
 
+                _worldEntranceEditor = new WorldEntranceEditorService(_window);
+                _battleSceneEditor = new BattleSceneEditorService(_window);
                 _visible = false;
 
             }
@@ -111,10 +141,34 @@ namespace Memoria.DevConsole
             }
         }
 
+        private void OnGUI()
+        {
+            if (_soundBrowserView != null) { _soundBrowserView.Draw(); return; }
+            if (_modelViewerService != null) { _modelViewerService.DrawSpsSearch(); _modelViewerService.DrawSfxPreview(); _modelViewerService.DrawFieldViewer(); }
+        }
+
         private void Update()
         {
+            if (_shuttingDown) return;
             try
             {
+                // Process release/input before observational work such as log IO.
+                // An editor error or a flooded log must not strand MDC's pause.
+                UpdateConsoleFreeze();
+                if (_soundBrowserView != null)
+                {
+                    _soundBrowserView.Update();
+                    if (_soundBrowserView.ExitRequested || (_window != null && _window.IsVisible))
+                    {
+                        _soundBrowserView.Dispose();
+                        _soundBrowserView = null;
+                        _viewerExitInputPending = true;
+                        _viewerExitFrame = Time.frameCount;
+                        _window.ShowHome();
+                    }
+                }
+                if (_battleSceneEditor != null) _battleSceneEditor.Update();
+                SceneTransitionAudio.Update();
                 if (_resolutionUiSyncService != null)
                     _resolutionUiSyncService.Update();
 
@@ -143,17 +197,47 @@ namespace Memoria.DevConsole
                     }
                 }
 
-                UpdateConsoleFreeze();
+                if (_worldEntranceEditor != null) _worldEntranceEditor.Update();
+                if (_fieldStateMoveBackwardRequested)
+                {
+                    _fieldStateMoveBackwardRequested = false;
+                    ProcessFieldStateMoveBackward();
+                }
+
+                if (_fieldStateMoveForwardRequested)
+                {
+                    _fieldStateMoveForwardRequested = false;
+                    ProcessFieldStateMoveForward();
+                }
+                if (_fieldStateSetCheckpointRequested)
+                {
+                    _fieldStateSetCheckpointRequested = false;
+                    ProcessFieldStateSetCheckpoint();
+                }
+                if (_fieldStateLoadCheckpointRequested)
+                {
+                    _fieldStateLoadCheckpointRequested = false;
+                    ProcessFieldStateLoadCheckpoint();
+                }
 
                 if (_fieldStateService != null)
                 {
-                    Boolean suspendCapture = (_window != null && _window.IsVisible && !_window.IsLiveLogActive) ||
+                    Boolean suspendCapture = _soundBrowserView != null || (_window != null && _window.IsVisible && !_window.IsLiveLogActive) ||
                                              (_modelViewerService != null && _modelViewerService.IsActive);
                     _fieldStateService.SetCaptureSuspended(suspendCapture);
                     _fieldStateService.Update();
                 }
 
-                if (_modelViewerService != null)
+                // F10 can reveal MDC while a viewer still owns the scene.
+                // Fully close it before MDC can return to the game.
+                if (_modelViewerService != null && _modelViewerService.IsActive &&
+                    _window != null && _window.IsVisible && !_modelViewerToggleRequested)
+                    _modelViewerService.ReturnHomeRequested = true;
+
+                if (_modelViewerService != null && _modelViewerService.ExitRequested)
+                    _modelViewerToggleRequested = true;
+
+                if (_modelViewerService != null && !_modelViewerToggleRequested)
                     _modelViewerService.UpdateRuntime();
 
                 if (_modelViewerToggleRequested)
@@ -162,8 +246,24 @@ namespace Memoria.DevConsole
 
                     if (_modelViewerService != null && _window != null)
                     {
-                        String modelViewerResult = _modelViewerService.Toggle();
+                        Boolean returnHome = _modelViewerService.ReturnHomeRequested;
+                        _modelViewerService.ReturnHomeRequested = false;
+                        Boolean wasActive = _modelViewerService.IsActive;
+                        Int32 viewerKind = _viewerKindRequested;
+                        _viewerKindRequested = 0;
+                        String modelViewerResult = viewerKind == 0 ? _modelViewerService.Toggle() : _modelViewerService.OpenViewer(viewerKind);
                         _window.SetModelViewerStatus(modelViewerResult);
+                        if (returnHome && !_modelViewerService.IsActive) _window.ShowHome();
+                        else if (_modelViewerService.IsActive || wasActive) _window.Hide();
+                        else _window.ShowHome();
+                        if (wasActive && !_modelViewerService.IsActive)
+                        {
+                            // A native-console Escape can arrive on key-down. Do not
+                            // pass that same press to the restored battle pause menu.
+                            _viewerExitInputPending = true;
+                            _viewerExitFrame = Time.frameCount;
+                        }
+                        UpdateConsoleFreeze();
                     }
                 }
 
@@ -237,11 +337,47 @@ namespace Memoria.DevConsole
                     {
                         StartCoroutine(_assetDumpService.DumpModelTextures(SetAssetDumpStatus));
                     }
+                    else if (dumpRequest == 11)
+                    {
+                        if (PersistenSingleton<FF9StateSystem>.Instance == null ||
+                            PersistenSingleton<FF9StateSystem>.Instance.mode != 1 ||
+                            PersistenSingleton<UIManager>.Instance == null ||
+                            PersistenSingleton<UIManager>.Instance.UnityScene != UIManager.Scene.Field)
+                            SetAssetDumpStatus("Load a field before using Export Current Loaded Field.");
+                        else
+                        {
+                            Int32 id = FF9StateSystem.Common.FF9.fldMapNo;
+                            _window.SetFieldCreatorSource(id);
+                            StartCoroutine(_assetDumpService.DumpFieldBackground(id, SetAssetDumpStatus));
+                        }
+                    }
                     else if (dumpRequest == 3)
                     {
                         Int32 id = _assetLookupId;
                         _assetLookupId = -1;
                         StartCoroutine(_assetDumpService.DumpFieldBackground(id, SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 8)
+                    {
+                        Int32 id = _assetLookupId;
+                        _assetLookupId = -1;
+                        StartCoroutine(_assetDumpService.ExportFieldComposite(id, SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 9)
+                    {
+                        Int32 id = _assetLookupId;
+                        String imagePath = _assetCutImagePath;
+                        _assetLookupId = -1;
+                        _assetCutImagePath = null;
+                        StartCoroutine(_assetDumpService.CutFieldComposite(id, imagePath, SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 12)
+                    {
+                        Int32 id = _assetLookupId;
+                        _assetLookupId = -1;
+                        SetAssetDumpStatus(_modelViewerService == null
+                            ? "Model export service is not available."
+                            : _modelViewerService.DumpFbxByModelId(id));
                     }
                     else if (dumpRequest == 4)
                     {
@@ -252,6 +388,22 @@ namespace Memoria.DevConsole
                     else if (dumpRequest == 5)
                     {
                         StartCoroutine(_assetDumpService.DumpCurrentBattleBackground(SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 6)
+                    {
+                        SetAssetDumpStatus("Dumping battle script bytes. The game may pause briefly...");
+                        BattleIDByteDumpService.Update();
+                        SetAssetDumpStatus("Battle Script byte dump complete.\r\nOutput: Memoria Dev Console\\Asset Dump\\BattleScriptDump");
+                    }
+                    else if (dumpRequest == 10)
+                    {
+                        StartCoroutine(_assetDumpService.DumpWorldMapTextures(SetAssetDumpStatus));
+                    }
+                    else if (dumpRequest == 7)
+                    {
+                        SetAssetDumpStatus("Dumping native SFX reference data. The game may pause while assets are scanned...");
+                        SFXDumpService.Update();
+                        SetAssetDumpStatus("SFX dump complete.\r\nOutput: Memoria Dev Console\\Asset Dump\\SFXDump");
                     }
                 }
 
@@ -286,9 +438,10 @@ namespace Memoria.DevConsole
                         try
                         {
                             DevSoundCatalog catalog = _soundBrowserService.BuildCatalog();
-                            _window.SetSoundBrowserCatalog(catalog);
-                            _window.SetSoundBrowserStatus(
-                                "Audio metadata loaded. Press Enter to preview; press S to stop.");
+                            if (_soundBrowserView != null) _soundBrowserView.Dispose();
+                            _soundBrowserView = new SoundBrowserView(_soundBrowserService, catalog);
+                            _window.HideForGame();
+                            UpdateConsoleFreeze();
                         }
                         catch (Exception ex)
                         {
@@ -336,6 +489,14 @@ namespace Memoria.DevConsole
 
                     if (_window != null)
                         _window.SetSoundBrowserStatus(result);
+                }
+
+                if (_soundBrowserService != null)
+                {
+                    String previewStatus = _soundBrowserService.UpdatePreview();
+                    if (previewStatus != null && _soundBrowserView != null) _soundBrowserView.Status = previewStatus;
+                    if (previewStatus != null && _window != null && _soundBrowserView == null)
+                        _window.SetSoundBrowserStatus(previewStatus);
                 }
 
                 if (_soundAliasSaveRequested)
@@ -436,39 +597,107 @@ namespace Memoria.DevConsole
             }
         }
 
+        private void RestoreConsoleInput()
+        {
+            if(_modelViewerService!=null)_modelViewerService.SetConsoleMenuInputBlocked(false);
+            if(_frozenUiKeyTrigger!=null)_frozenUiKeyTrigger.enabled=_savedUiKeyTriggerEnabled;
+            _frozenUiKeyTrigger=null;
+        }
+        private void LateUpdate()
+        {
+            Boolean consoleOpen = !_shuttingDown &&
+                ((_window != null && _window.IsVisible) || _soundBrowserView != null ||
+                 (_modelViewerService != null && _modelViewerService.IsActive));
+            if (!consoleOpen)
+            {
+                ReleaseGameMusic();
+                return;
+            }
+
+            ISdLibAPI api = ISdLibAPIProxy.Instance;
+            _pausedGameMusic.RemoveWhere(id => api.SdSoundSystem_SoundCtrl_IsExist(id) == 0);
+
+            // Title/menu tracks and their crossfades use MusicPlayer.
+            MusicPlayer player = SoundLib.MusicPlayer;
+            if (player != null)
+            {
+                PauseGameMusic(api, player.GetActiveSoundID());
+                SoundProfile upcoming = UpcomingMusic?.GetValue(player) as SoundProfile;
+                if (upcoming != null) PauseGameMusic(api, upcoming.SoundID);
+            }
+
+            // Field, world and battle scripts dispatch BGM through a separate player.
+            AllSoundDispatchPlayer dispatch = SoundLib.AllSoundDispatchPlayer;
+            SoundDatabase songs = dispatch == null ? null : DispatchMusic?.GetValue(dispatch) as SoundDatabase;
+            if (songs != null)
+                foreach (SoundProfile song in songs.ReadAll().Values)
+                    PauseGameMusic(api, song.SoundID);
+        }
+
+        private void PauseGameMusic(ISdLibAPI api, Int32 id)
+        {
+            if (id <= 0 || api.SdSoundSystem_SoundCtrl_IsExist(id) == 0 || _pausedGameMusic.Contains(id))
+                return;
+            api.SdSoundSystem_SoundCtrl_SetPause(id, 1, 0);
+            _pausedGameMusic.Add(id);
+        }
+
+        private void ReleaseGameMusic()
+        {
+            if (_pausedGameMusic.Count == 0) return;
+            ISdLibAPI api = ISdLibAPIProxy.Instance;
+            // Release only the pause added by MDC; the audio backend stacks pauses.
+            foreach (Int32 id in _pausedGameMusic)
+                if (api.SdSoundSystem_SoundCtrl_IsExist(id) != 0)
+                    api.SdSoundSystem_SoundCtrl_SetPause(id, 0, 0);
+            _pausedGameMusic.Clear();
+        }
+
+        private void OnDisable()
+        {
+            ReleaseGameMusic();
+        }
+
         private void UpdateConsoleFreeze()
         {
             if (_window == null)
                 return;
 
             Boolean viewerActive = _modelViewerService != null && _modelViewerService.IsActive;
-            // Live Log is observational: keep FFIX fully playable while it is open.
-            // Every other Dev Console page still freezes FFIX exactly as before.
-            Boolean consoleNeedsFreeze = _window.IsVisible && !_window.IsLiveLogActive;
-            Boolean shouldFreeze = consoleNeedsFreeze || viewerActive;
+            if (_viewerExitInputPending && !Input.GetKey(KeyCode.Escape) && !Input.GetKey(KeyCode.F12) && !Input.GetKey(KeyCode.F10) && Time.frameCount > _viewerExitFrame)
+                _viewerExitInputPending = false;
+            // The battle editor is live: Freeze Camera owns only the rendered view,
+            // not HonoBehaviorSystem or battle input. Other tool pages keep their pause.
+            Boolean blockMenu = _window.IsVisible || viewerActive || _soundBrowserView != null || _viewerExitInputPending;
+            if (_modelViewerService != null) _modelViewerService.SetConsoleMenuInputBlocked(blockMenu);
+            if (blockMenu)
+            {
+                UIKeyTrigger current=UnityEngine.Object.FindObjectOfType(typeof(UIKeyTrigger)) as UIKeyTrigger;
+                if(current!=_frozenUiKeyTrigger)
+                {
+                    if(_frozenUiKeyTrigger!=null)_frozenUiKeyTrigger.enabled=_savedUiKeyTriggerEnabled;
+                    _frozenUiKeyTrigger=current;
+                    if(current!=null)_savedUiKeyTriggerEnabled=current.enabled;
+                }
+                if(_frozenUiKeyTrigger!=null)_frozenUiKeyTrigger.enabled=false;
+            }
+            else if(_frozenUiKeyTrigger!=null)
+            {
+                _frozenUiKeyTrigger.enabled=_savedUiKeyTriggerEnabled;
+                _frozenUiKeyTrigger=null;
+            }            Boolean consoleNeedsFreeze = _window.IsVisible && !_window.IsLiveLogActive && !_window.IsBattleSceneEditorActive;
+            Boolean shouldFreeze = consoleNeedsFreeze || viewerActive || _soundBrowserView != null || _viewerExitInputPending;
 
             if (shouldFreeze && !_runtimeFreezeApplied)
             {
-                // Do NOT mutate UIManager.State here. UIKeyTrigger raises the Dev Console
-                // update callback before it processes FFIX controls, so changing UI state
-                // merely lets the same key press leak into another FFIX state.
-                // Instead, disable FFIX's input dispatcher and Hono simulation loop at
-                // their MonoBehaviour boundaries. The native console keeps reading its
-                // global keyboard hook, and ModelViewerService drives ModelViewerScene.Update().
-                _frozenUiKeyTrigger = UnityEngine.Object.FindObjectOfType(typeof(UIKeyTrigger)) as UIKeyTrigger;
-                if (_frozenUiKeyTrigger != null)
-                {
-                    _savedUiKeyTriggerEnabled = _frozenUiKeyTrigger.enabled;
-                    _frozenUiKeyTrigger.enabled = false;
-                }
-
+                // Disable only the components owned at entry. Re-freezing replacement
+                // components during a scene load can prevent that scene from starting.
                 _frozenHonoSystem = UnityEngine.Object.FindObjectOfType(typeof(HonoBehaviorSystem)) as HonoBehaviorSystem;
                 if (_frozenHonoSystem != null)
                 {
                     _savedHonoSystemEnabled = _frozenHonoSystem.enabled;
                     _frozenHonoSystem.enabled = false;
                 }
-
                 _runtimeFreezeApplied = true;
             }
             else if (!shouldFreeze && _runtimeFreezeApplied)
@@ -477,15 +706,24 @@ namespace Memoria.DevConsole
                 // scene reload, EventEngine replacement, or synthetic input.
                 if (_frozenHonoSystem != null)
                     _frozenHonoSystem.enabled = _savedHonoSystemEnabled;
-                if (_frozenUiKeyTrigger != null)
-                    _frozenUiKeyTrigger.enabled = _savedUiKeyTriggerEnabled;
+
 
                 _frozenHonoSystem = null;
-                _frozenUiKeyTrigger = null;
+
                 _runtimeFreezeApplied = false;
             }
         }
 
+        private void PrepareForSnapshotLoad()
+        {
+            if (_soundBrowserView != null) { _soundBrowserView.Dispose(); _soundBrowserView = null; }
+            // Complete the UI hide before releasing freeze so the next Update cannot
+            // freeze the new scene again. All snapshot loads reach this on Unity's thread.
+            if (_modelViewerService != null && _modelViewerService.IsActive)
+                _modelViewerService.Shutdown();
+            if (_window != null) _window.Hide();
+            UpdateConsoleFreeze();
+        }
         private void OnFieldStatePageOpened()
         {
             if (_fieldStateService == null || _window == null)
@@ -494,7 +732,9 @@ namespace Memoria.DevConsole
             _window.SetFieldStateStatus(_fieldStateService.BuildStatusText());
         }
 
-        private void OnFieldStateMoveBackwardRequested()
+        private void OnFieldStateMoveBackwardRequested() { _fieldStateMoveBackwardRequested = true; }
+
+        private void ProcessFieldStateMoveBackward()
         {
             if (_fieldStateService == null || _window == null)
                 return;
@@ -511,7 +751,9 @@ namespace Memoria.DevConsole
             _window.SetFieldStateStatus(_fieldStateService.BuildStatusText());
         }
 
-        private void OnFieldStateMoveForwardRequested()
+        private void OnFieldStateMoveForwardRequested() { _fieldStateMoveForwardRequested = true; }
+
+        private void ProcessFieldStateMoveForward()
         {
             if (_fieldStateService == null || _window == null)
                 return;
@@ -528,7 +770,9 @@ namespace Memoria.DevConsole
             _window.SetFieldStateStatus(_fieldStateService.BuildStatusText());
         }
 
-        private void OnFieldStateSetCheckpointRequested()
+        private void OnFieldStateSetCheckpointRequested() { _fieldStateSetCheckpointRequested = true; }
+
+        private void ProcessFieldStateSetCheckpoint()
         {
             if (_fieldStateService == null || _window == null)
                 return;
@@ -551,7 +795,9 @@ namespace Memoria.DevConsole
             _window.SetFieldStateStatus(_fieldStateService.BuildStatusText());
         }
 
-        private void OnFieldStateLoadCheckpointRequested()
+        private void OnFieldStateLoadCheckpointRequested() { _fieldStateLoadCheckpointRequested = true; }
+
+        private void ProcessFieldStateLoadCheckpoint()
         {
             if (_fieldStateService == null || _window == null)
                 return;
@@ -587,18 +833,25 @@ namespace Memoria.DevConsole
             _resetToLauncherRequested = true;
         }
 
+        private void OnViewerRequested(Int32 kind)
+        {
+            if (_window != null) _window.Hide();
+            _viewerKindRequested = kind;
+            _modelViewerToggleRequested = true;
+        }
         private void OnModelViewerRequested()
         {
             // Native console events originate on the Win32 window thread.
-            // Unity / ModelViewerScene work must happen on the Unity main thread.
+            // Hide immediately on the window thread; load Unity assets on its main thread.
+            if (_window != null) _window.Hide();
             _modelViewerToggleRequested = true;
         }
 
 
-        private void OnFieldBackgroundDumpRequested()
+        private void OnCurrentFieldDumpRequested()
         {
-            // Native window callbacks happen on the Win32 thread; defer Unity work to Update().
-            _assetDumpRequested = 1;
+            // Read the active field on Unity's thread, never in the native UI callback.
+            _assetDumpRequested = 11;
         }
 
         private void OnTextureDumpRequested()
@@ -612,6 +865,24 @@ namespace Memoria.DevConsole
             _assetDumpRequested = 3;
         }
 
+        private void OnFieldCompositeByIdRequested(Int32 fieldId)
+        {
+            _assetLookupId = fieldId;
+            _assetDumpRequested = 8;
+        }
+
+        private void OnFieldCompositeCutRequested(Int32 fieldId, String imagePath)
+        {
+            _assetLookupId = fieldId;
+            _assetCutImagePath = imagePath;
+            _assetDumpRequested = 9;
+        }
+
+        private void OnFbxByModelIdRequested(Int32 modelId)
+        {
+            _assetLookupId = modelId;
+            _assetDumpRequested = 12;
+        }
         private void OnTextureByModelIdRequested(Int32 modelId)
         {
             _assetLookupId = modelId;
@@ -621,6 +892,18 @@ namespace Memoria.DevConsole
         private void OnCurrentBattleBackgroundDumpRequested()
         {
             _assetDumpRequested = 5;
+        }
+
+        private void OnBattleScriptDumpRequested()
+        {
+            _assetDumpRequested = 6;
+        }
+
+        private void OnWorldMapTextureDumpRequested() { _assetDumpRequested = 10; }
+
+        private void OnSfxDumpRequested()
+        {
+            _assetDumpRequested = 7;
         }
 
         private void OnWarpRequested(StoryWarpPreset preset)
@@ -736,6 +1019,7 @@ namespace Memoria.DevConsole
 
         private void OnCompileCompleted(Boolean success)
         {
+            if (_shuttingDown) return;
             if (success)
             {
                 if (_fieldStateService != null)
@@ -767,17 +1051,24 @@ namespace Memoria.DevConsole
 
         private void Shutdown()
         {
-            // If the game is closed while Model Viewer is open, HonoBehaviorSystem and
-            // UIKeyTrigger are still disabled (see UpdateConsoleFreeze). Leaving them
-            // disabled during Unity's own shutdown sequence is what was causing the game
-            // to become unresponsive on quit ("locks up, have to Ctrl+Alt+Del"). Undo the
-            // freeze and cleanly exit the viewer FIRST, before anything else runs, so the
-            // rest of the engine's own shutdown/quit handling is never blocked on us.
+            if (_shuttingDown) return;
+            if (_battleSceneEditor != null) _battleSceneEditor.Dispose();
+            _shuttingDown = true;
+            ReleaseGameMusic();
+            _restartPending = false;
+            _hardResetRequested = false;
+            _resetToLauncherRequested = false;
+            _compileRequested = false;
+            _modelViewerToggleRequested = false;
+            HardResetService.BeginShutdown();
+
+            // Release frozen systems and viewer state without loading scenes or
+            // launching another process. Both quit and destroy can call this method.
             try
             {
                 if (_modelViewerService != null && _modelViewerService.IsActive)
                 {
-                    _modelViewerService.Toggle();
+                    _modelViewerService.Shutdown();
                 }
             }
             catch (Exception ex)
@@ -785,6 +1076,7 @@ namespace Memoria.DevConsole
                 Log.Error("[Dev Console] Failed to cleanly exit Model Viewer during shutdown: " + ex);
             }
 
+            if(_modelViewerService!=null || !System.Object.ReferenceEquals(_frozenUiKeyTrigger,null)) RestoreConsoleInput();
             if (_runtimeFreezeApplied)
             {
                 try
@@ -800,21 +1092,31 @@ namespace Memoria.DevConsole
                 }
 
                 _frozenHonoSystem = null;
-                _frozenUiKeyTrigger = null;
+
                 _runtimeFreezeApplied = false;
             }
+
+            if (_fieldStateService != null)
+                _fieldStateService.BeforeSnapshotLoad -= PrepareForSnapshotLoad;
 
             if (_window != null)
             {
                 _window.CompileRestartRequested -= OnCompileRestartRequested;
                 _window.ModelViewerRequested -= OnModelViewerRequested;
+                _window.ViewerRequested -= OnViewerRequested;
                 _window.HardResetRequested -= OnHardResetRequested;
                 _window.ResetToLauncherRequested -= OnResetToLauncherRequested;
-                _window.FieldBackgroundDumpRequested -= OnFieldBackgroundDumpRequested;
+                _window.CurrentFieldDumpRequested -= OnCurrentFieldDumpRequested;
                 _window.TextureDumpRequested -= OnTextureDumpRequested;
                 _window.FieldBackgroundByIdRequested -= OnFieldBackgroundByIdRequested;
+                _window.FieldCompositeByIdRequested -= OnFieldCompositeByIdRequested;
+                _window.FieldCompositeCutRequested -= OnFieldCompositeCutRequested;
                 _window.TextureByModelIdRequested -= OnTextureByModelIdRequested;
+                _window.FbxByModelIdRequested -= OnFbxByModelIdRequested;
                 _window.CurrentBattleBackgroundDumpRequested -= OnCurrentBattleBackgroundDumpRequested;
+                _window.BattleScriptDumpRequested -= OnBattleScriptDumpRequested;
+                _window.SfxDumpRequested -= OnSfxDumpRequested;
+                _window.WorldMapTextureDumpRequested -= OnWorldMapTextureDumpRequested;
                 _window.WarpRequested -= OnWarpRequested;
                 _window.SoundBrowserOpened -= OnSoundBrowserOpened;
                 _window.SoundPreviewRequested -= OnSoundPreviewRequested;
@@ -841,6 +1143,7 @@ namespace Memoria.DevConsole
                 _logService = null;
             }
 
+            if (_soundBrowserView != null) { _soundBrowserView.Dispose(); _soundBrowserView = null; }
             if (_soundBrowserService != null)
             {
                 _soundBrowserService.StopAll();

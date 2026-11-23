@@ -10,8 +10,16 @@ namespace Memoria.DevConsole
 {
     public static class HardResetService
     {
+        private static volatile Boolean _shuttingDown;
+
+        public static void BeginShutdown()
+        {
+            _shuttingDown = true;
+        }
+
         public static void Restart()
         {
+            if (_shuttingDown) return;
             String[] commandLine = Environment.GetCommandLineArgs();
             String executable = GetExecutablePath(commandLine);
 
@@ -39,6 +47,7 @@ namespace Memoria.DevConsole
 
         public static void RestartToLauncher()
         {
+            if (_shuttingDown) return;
             String workingDirectory = Environment.CurrentDirectory;
             String launcher = Path.Combine(workingDirectory, "FF9_Launcher.exe");
 

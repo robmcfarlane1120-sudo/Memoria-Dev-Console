@@ -1,0 +1,29 @@
+CUSTOM WORLD ENTRANCE - FIELD RETURN
+
+In MDC: World Entrance Editor > Destination > Copy HWS Return Block > Enter.
+
+In Hades Workshop:
+- Open the destination field's script.
+- Find the Region*_Range function corresponding to the physical exit you want.
+  The arrival entrance number does not automatically identify that function.
+- Paste this block after the existing IsMovementEnabled guard, before the
+  original exit actions: CalculateExitPosition(), ExitField(), fades, movement
+  or menu locks, and Field()/WorldMap() commands.
+- Keep the original code below the block for ordinary visits.
+- Save/export the field script through HWS. Installing entrance JSON does not
+  edit or export the field script for you.
+
+COPY THIS BLOCK:
+
+if ( MemoriaDictionary(988, 0) == 1 ) {
+    set MemoriaDictionary(988, 0) = 0
+    return
+}
+
+The custom entrance runtime sets 988[0] to 1 when entering. The block sets it
+to 0 to request return to the recorded world entrance. The runtime handles
+the transition; return prevents the vanilla exit actions from running.
+
+Do not place this block in Main_Init or manually set the flag to 1.
+988[0] is the shared custom-entrance return convention. Runtime ownership
+checks select the mod handling the return; unrelated use of 988 can conflict.

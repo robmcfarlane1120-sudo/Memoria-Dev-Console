@@ -109,12 +109,17 @@ namespace Memoria.DevConsole
     public sealed class SoundBrowserService
     {
         private String _lastMovieName;
-        private Int32 _loadedSfxId = -1;
+        private readonly Object _previewLock = new Object();
+        private Int32 _previewGeneration;
+        private DevSoundEntry _pendingPreviewEntry;
+        private SoundProfile _readyPreviewProfile;
+        private Boolean _previewLoadFinished;
+        private SoundProfile _activePreviewProfile;
         private readonly Dictionary<String, String> _aliases = new Dictionary<String, String>(StringComparer.OrdinalIgnoreCase);
 
         private static String AliasPath
         {
-            get { return Path.Combine(Path.Combine(Environment.CurrentDirectory, "Memoria Dev Console"), "SoundAliases.txt"); }
+            get { return Path.Combine(Path.Combine(Environment.CurrentDirectory, "Memoria Dev Console/FF9_Data/SoundData"), "SoundAliases.txt"); }
         }
 
         public DevSoundCatalog BuildCatalog()
@@ -153,7 +158,12 @@ namespace Memoria.DevConsole
                 for (Int32 i = 0; i < pair.Value.Count; i++)
                 {
                     Int32 runtimeSlot = residentPaths.Count + i;
-                    group.Sounds.Add(CreateSfxEntry(pair.Key, i, runtimeSlot, pair.Value[i], false));
+                    DevSoundEntry sound = CreateSfxEntry(pair.Key, i, runtimeSlot, pair.Value[i], false);
+                    // Preserve the source filename/slot for accurate playback, but
+                    // expose the named battle effect in the searchable entry identity.
+                    // The same entry is shared by SFX Groups and Battle Effect Sounds.
+                    sound.Identity = group.Name + " — sound " + (i + 1);
+                    group.Sounds.Add(sound);
                 }
 
                 catalog.SfxGroups.Add(group);
@@ -161,6 +171,7 @@ namespace Memoria.DevConsole
 
             BuildFieldGroups(catalog);
             ClassifySoundEffects(catalog);
+            AddEmbeddedBattleEffects(catalog);
 
             return catalog;
         }
@@ -175,7 +186,6 @@ namespace Memoria.DevConsole
                     return "No embedded-sound metadata exists for SFX " + sfxId + ".";
 
                 SoundLib.LoadSfxSoundData(sfxId);
-                _loadedSfxId = sfxId;
                 return "Loaded SFX " + sfxId + " - " + GetSfxName(sfxId) + ". Select a sound to preview.";
             }
             catch (Exception ex)
@@ -214,23 +224,7 @@ namespace Memoria.DevConsole
 
                     case DevSoundCategory.SfxSound:
                     case DevSoundCategory.ResidentSfxSound:
-                        if (entry.Category == DevSoundCategory.ResidentSfxSound)
-                        {
-                            if (SoundLib.PlaySfxSound(entry.RuntimeSlot, 1f, 0f, 1f) == null)
-                                return "That resident SFX sound is still loading. Press Preview again.";
-                            break;
-                        }
-
-                        if (_loadedSfxId != entry.SfxId)
-                        {
-                            SoundLib.LoadSfxSoundData(entry.SfxId);
-                            _loadedSfxId = entry.SfxId;
-                            return "SFX " + entry.SfxId + " was still loading. Press Preview again.";
-                        }
-
-                        if (SoundLib.PlaySfxSound(entry.RuntimeSlot, 1f, 0f, 1f) == null)
-                            return "That SFX sound is still loading. Press Preview again.";
-                        break;
+                        return BeginEmbeddedPreview(entry);
                 }
 
                 return "Playing " + BuildEntryTitle(entry) + ".";
@@ -241,18 +235,84 @@ namespace Memoria.DevConsole
             }
         }
 
-        public String StopAll()
+        private String BeginEmbeddedPreview(DevSoundEntry entry)
         {
+            if (String.IsNullOrEmpty(entry.Path))
+                return "Preview failed: selected sound has no resource path.";
+            Int32 generation;
+            lock (_previewLock)
+            {
+                generation = _previewGeneration;
+                _pendingPreviewEntry = entry;
+                _readyPreviewProfile = null;
+                _previewLoadFinished = false;
+            }
+            // Load the exact selected resource, without replacing the game's SFX bank.
+            // Loader callbacks may arrive later: only the newest request can play.
+            SoundLib.LoadSoundEffect(entry.Path, delegate(SoundProfile profile, SoundDatabase database)
+            {
+                lock (_previewLock)
+                {
+                    if (generation != _previewGeneration) return;
+                    _readyPreviewProfile = profile;
+                    _previewLoadFinished = true;
+                }
+            }, 1f, 0f, 1f);
+            return UpdatePreview() ?? ("Loading " + BuildEntryTitle(entry) + "; playback will start automatically.");
+        }
+
+        public String UpdatePreview()
+        {
+            DevSoundEntry entry;
+            SoundProfile profile;
+            lock (_previewLock)
+            {
+                if (_pendingPreviewEntry == null || !_previewLoadFinished) return null;
+                entry = _pendingPreviewEntry;
+                profile = _readyPreviewProfile;
+                _pendingPreviewEntry = null;
+                _readyPreviewProfile = null;
+                _previewLoadFinished = false;
+            }
+            if (profile == null || profile.BankID == 0)
+                return "Preview failed: could not load " + BuildEntryTitle(entry) + ".";
             try
             {
+                SoundPlayer.StaticCreateSound(profile);
+                SoundPlayer.StaticStartSound(profile, SoundLib.SoundEffectPlayer.Volume);
+                if (profile.SoundID == 0)
+                    return "Preview failed: could not start " + BuildEntryTitle(entry) + ".";
+                _activePreviewProfile = profile;
+                return "Playing " + BuildEntryTitle(entry) + ".";
+            }
+            catch (Exception ex) { return "Preview failed: " + ex.Message; }
+        }
+
+        public String StopAll()
+        {
+            lock (_previewLock)
+            {
+                _previewGeneration++;
+                _pendingPreviewEntry = null;
+                _readyPreviewProfile = null;
+                _previewLoadFinished = false;
+            }
+            try
+            {
+                if (_activePreviewProfile != null)
+                {
+                    SoundPlayer.StaticStopSound(_activePreviewProfile);
+                    _activePreviewProfile = null;
+                }
                 SoundLib.StopAllSfxSound();
                 SoundLib.StopAllSoundEffects();
                 SoundLib.StopAllSongs();
-                SoundLib.StopMusic();
+                SoundLib.StopMusic(0);
 
                 if (!String.IsNullOrEmpty(_lastMovieName))
                 {
-                    SoundLib.StopMovieMusic(_lastMovieName, true);
+                    if (SoundLib.MovieAudioPlayer != null)
+                        SoundLib.MovieAudioPlayer.StopMusic(0);
                     _lastMovieName = null;
                 }
 
@@ -301,8 +361,8 @@ namespace Memoria.DevConsole
         {
             DevSoundEntry entry = new DevSoundEntry();
             entry.Category = resident ? DevSoundCategory.ResidentSfxSound : DevSoundCategory.SfxSound;
-            entry.Id = FindOrdinarySoundEffectId(entry.Path);
             entry.Path = path ?? String.Empty;
+            entry.Id = FindOrdinarySoundEffectId(entry.Path);
             entry.Name = GetResourceKey(entry.Path);
             entry.Identity = GetFriendlyIdentity(entry.Path);
             entry.SfxId = sfxId;
@@ -432,6 +492,33 @@ namespace Memoria.DevConsole
             }
         }
 
+        // Embedded battle effect audio lives in the SFX-bank namespace, not the
+        // ordinary SoundEffectIndex. Expose the existing entries in this view
+        // without changing their category, bank/slot identity or preview route.
+        private static void AddEmbeddedBattleEffects(DevSoundCatalog catalog)
+        {
+            HashSet<String> seen = new HashSet<String>(StringComparer.OrdinalIgnoreCase);
+            foreach (DevSoundEntry entry in catalog.BattleEffectSounds)
+                seen.Add(entry.Category + ":" + entry.Id);
+
+            foreach (DevSfxSoundGroup group in catalog.SfxGroups)
+            {
+                foreach (DevSoundEntry entry in group.Sounds)
+                {
+                    String key = "SFX:" + entry.SfxId + ":" + entry.LocalSlot;
+                    if (seen.Add(key))
+                        catalog.BattleEffectSounds.Add(entry);
+                }
+            }
+
+            foreach (DevSoundEntry entry in catalog.ResidentSfxSounds)
+            {
+                String key = "RESIDENT:" + entry.RuntimeSlot;
+                if (seen.Add(key))
+                    catalog.BattleEffectSounds.Add(entry);
+            }
+        }
+
         private static Boolean ContainsAny(String value, params String[] terms)
         {
             if (String.IsNullOrEmpty(value)) return false;
@@ -507,6 +594,363 @@ namespace Memoria.DevConsole
         private static String FormatIdentity(DevSoundEntry entry)
         {
             return String.IsNullOrEmpty(entry.Identity) ? String.Empty : " — " + entry.Identity;
+        }
+    }
+}
+
+// Viewer-style front end. The existing service owns catalog, playback and alias persistence.
+namespace Memoria.DevConsole
+{
+    internal sealed class SoundBrowserView : IDisposable
+    {
+        private readonly SoundBrowserService _service;
+        private readonly DevSoundCatalog _catalog;
+        private readonly ViewerHoverHelp _help = new ViewerHoverHelp();
+        private readonly List<DevSoundEntry> _entries = new List<DevSoundEntry>();
+        private readonly List<DevFieldSoundGroup> _fields = new List<DevFieldSoundGroup>();
+        private readonly List<DevSfxSoundGroup> _banks = new List<DevSfxSoundGroup>();
+        private UnityEngine.Vector2 _scroll, _categoryScroll, _detailScroll;
+        private UnityEngine.GUISkin _skin;
+        private UnityEngine.GUIStyle _categoryRow, _selectedCategoryRow;
+        private UnityEngine.GUIStyle _row, _selectedRow, _soundRow, _selectedSoundRow, _heading;
+        private UnityEngine.Texture2D _selectedTexture;
+        private readonly Boolean _savedCursor;
+        private readonly UnityEngine.CursorLockMode _savedLock;
+        private Int32 _category, _selected;
+        private String _filter = "", _alias = "";
+        private DevFieldSoundGroup _field;
+        private DevSfxSoundGroup _bank;
+        private DevSoundEntry _aliasEntry;
+        private Boolean _reveal;
+        private Boolean _categoryFocus = true;
+        private Int32[] _categoryCounts;
+        internal Boolean ExitRequested;
+        internal String Status = "Choose a category, then select a sound to preview.";
+        private static readonly String[] Categories = {
+            "Field Sound Effects", "Enemy Battle Sounds", "Player Attack Sounds",
+            "Battle Effect Sounds", "Known Other Sounds", "Music",
+            "Song Samples / Cues", "Movie Audio", "SFX Sound Banks"
+        };
+        private static readonly String[] CategoryHelp = {
+            "Browse vanilla field locations, then the sound effects referenced by each field.",
+            "Enemy attack, appearance and death sounds identified by the battle catalog.",
+            "Character attacks, weapons, swings and impacts identified by the battle catalog.",
+            "Named battle effects, including embedded SFX sounds and resident sounds.",
+            "Other sound effects with an identified name.",
+            "Browse and preview background music by ID, name or known usage.",
+            "Samples and cues played with SoundType=Song. These are separate from background music.",
+            "Audio resources associated with movies.",
+            "Browse effects by SFX ID, then audition their individual embedded sound files."
+        };
+
+        internal SoundBrowserView(SoundBrowserService service, DevSoundCatalog catalog)
+        {
+            _service = service; _catalog = catalog;
+            _categoryCounts=new[] { catalog.FieldSoundGroups.Sum(g=>g.Sounds.Count),catalog.EnemyBattleSounds.Count,catalog.PlayerAttackSounds.Count,catalog.BattleEffectSounds.Count,catalog.KnownSoundEffects.Count,catalog.Music.Count,catalog.Songs.Count,catalog.MovieAudio.Count,catalog.SfxGroups.Sum(g=>g.Sounds.Count) };
+            _savedCursor = UnityEngine.Cursor.visible;
+            _savedLock = UnityEngine.Cursor.lockState;
+            Refresh();
+        }
+
+        internal void Update()
+        {
+            UnityEngine.Cursor.visible = true;
+            UnityEngine.Cursor.lockState = UnityEngine.CursorLockMode.None;
+        }
+
+        private Boolean Groups { get { return (_category == 0 && _field == null) || (_category == 8 && _bank == null); } }
+        private Int32 Count { get { return Groups ? (_category == 0 ? _fields.Count : _banks.Count) : _entries.Count; } }
+        private DevSoundEntry Selected { get { return !Groups && _selected >= 0 && _selected < _entries.Count ? _entries[_selected] : null; } }
+
+        private void Refresh()
+        {
+            _entries.Clear(); _fields.Clear(); _banks.Clear();
+            String query = _filter.Trim().ToLowerInvariant();
+            if (_category == 0 && _field == null)
+                _fields.AddRange(_catalog.FieldSoundGroups.Where(g => g.SearchText.Contains(query)));
+            else if (_category == 8 && _bank == null)
+                _banks.AddRange(_catalog.SfxGroups.Where(g => g.SearchText.Contains(query)));
+            else
+            {
+                IEnumerable<DevSoundEntry> source;
+                switch (_category)
+                {
+                    case 0: source = _field.Sounds; break;
+                    case 1: source = _catalog.EnemyBattleSounds; break;
+                    case 2: source = _catalog.PlayerAttackSounds; break;
+                    case 3: source = _catalog.BattleEffectSounds; break;
+                    case 4: source = _catalog.KnownSoundEffects; break;
+                    case 5: source = _catalog.Music; break;
+                    case 6: source = _catalog.Songs; break;
+                    case 7: source = _catalog.MovieAudio; break;
+                    default: source = _bank.Sounds; break;
+                }
+                _entries.AddRange(source.Where(e => e.SearchText.Contains(query)));
+            }
+            _selected = 0; _scroll = UnityEngine.Vector2.zero; _detailScroll = UnityEngine.Vector2.zero;
+            _aliasEntry = null;
+        }
+
+        private void Activate()
+        {
+            if (Count == 0) return;
+            if (Groups)
+            {
+                if (_category == 0) _field = _fields[_selected];
+                else _bank = _banks[_selected];
+                _filter = ""; Refresh();
+            }
+            else Status = _service.Preview(Selected);
+        }
+
+        private void Back()
+        {
+            if (!_categoryFocus)
+            {
+                _categoryFocus = true;
+                _field = null; _bank = null; _filter = ""; Refresh();
+            }
+            else ExitRequested = true;
+        }
+        private void Keyboard()
+        {
+            UnityEngine.Event ev = UnityEngine.Event.current;
+            if (ev.type != UnityEngine.EventType.KeyDown) return;
+            String focused = UnityEngine.GUI.GetNameOfFocusedControl();
+            if (ev.keyCode == UnityEngine.KeyCode.Escape)
+            {
+                if (focused == "sound-search" || focused == "sound-alias") UnityEngine.GUI.FocusControl(null);
+                else Back();
+                ev.Use(); return;
+            }
+            if (focused == "sound-search" || focused == "sound-alias") return;
+            if (_categoryFocus)
+            {
+                if (ev.keyCode == UnityEngine.KeyCode.UpArrow || ev.keyCode == UnityEngine.KeyCode.DownArrow)
+                {
+                    _category = (_category + (ev.keyCode == UnityEngine.KeyCode.UpArrow ? Categories.Length-1 : 1)) % Categories.Length;
+                    _field = null; _bank = null; _filter = ""; Refresh();
+                    _categoryScroll.y = Math.Max(0,_category*65-100);
+                    ev.Use(); return;
+                }
+                if (ev.keyCode == UnityEngine.KeyCode.Return || ev.keyCode == UnityEngine.KeyCode.Space)
+                { _categoryFocus = false; _reveal = true; ev.Use(); return; }
+                return;
+            }            Int32 step = 0;
+            if (ev.keyCode == UnityEngine.KeyCode.UpArrow) step = -1;
+            if (ev.keyCode == UnityEngine.KeyCode.DownArrow) step = 1;
+            if (ev.keyCode == UnityEngine.KeyCode.LeftArrow || ev.keyCode == UnityEngine.KeyCode.PageUp) step = -12;
+            if (ev.keyCode == UnityEngine.KeyCode.RightArrow || ev.keyCode == UnityEngine.KeyCode.PageDown) step = 12;
+            if (step != 0)
+            {
+                if (Count > 0)
+                {
+                    _selected = ((_selected + step) % Count + Count) % Count;
+                    _reveal = true;
+                    // Preview stops existing playback and cancels pending loads first.
+                    if (!Groups && (ev.keyCode == UnityEngine.KeyCode.UpArrow || ev.keyCode == UnityEngine.KeyCode.DownArrow))
+                        Status = _service.Preview(Selected);
+                }
+                ev.Use();
+            }
+            else if (ev.keyCode == UnityEngine.KeyCode.Return || ev.keyCode == UnityEngine.KeyCode.Space) { Activate(); ev.Use(); }
+            else if (ev.keyCode == UnityEngine.KeyCode.S || ev.keyCode == UnityEngine.KeyCode.X) { Status = _service.StopAll(); ev.Use(); }
+            else if (ev.keyCode == UnityEngine.KeyCode.F) { UnityEngine.GUI.FocusControl("sound-search"); ev.Use(); }
+            else if (ev.keyCode == UnityEngine.KeyCode.A && Selected != null) { UnityEngine.GUI.FocusControl("sound-alias"); ev.Use(); }
+            else if (ev.keyCode == UnityEngine.KeyCode.C && (ev.control || ev.command)) { Copy(); ev.Use(); }
+        }
+
+        private void Copy()
+        {
+            if (Selected == null) return;
+            UnityEngine.GUIUtility.systemCopyBuffer = Selected.SequenceCall;
+            Status = "Copied sequence command: " + Selected.SequenceCall;
+        }
+
+        private void EnsureStyle()
+        {
+            if (_skin != null) return;
+            _skin = UnityEngine.Object.Instantiate(UnityEngine.GUI.skin);
+            foreach (UnityEngine.GUIStyle style in new[] { _skin.label, _skin.button, _skin.textField, _skin.box })
+            { style.fontSize = 19; style.normal.textColor = UnityEngine.Color.white; }
+            _skin.label.wordWrap = true;
+            _skin.button.padding = new UnityEngine.RectOffset(12, 12, 7, 7);
+            _skin.button.normal.textColor = ConsoleTheme.UnityAccent;
+            _skin.button.hover.textColor = UnityEngine.Color.white;
+            _skin.button.active.textColor = UnityEngine.Color.white;
+            _row = new UnityEngine.GUIStyle(_skin.button) { alignment = UnityEngine.TextAnchor.MiddleLeft, clipping = UnityEngine.TextClipping.Clip, wordWrap = false, margin = new UnityEngine.RectOffset(0, 0, 0, 0) };
+            _selectedTexture = new UnityEngine.Texture2D(1, 1);
+            _selectedTexture.SetPixel(0, 0, ConsoleTheme.UnityBackground);
+            _selectedTexture.Apply();
+            _selectedRow = new UnityEngine.GUIStyle(_row);
+            _selectedRow.normal.background = _selectedTexture;
+            _selectedRow.hover.background = _selectedTexture;
+            _selectedRow.active.background = _selectedTexture;
+            _selectedRow.normal.textColor = ConsoleTheme.UnityAccent;
+            _categoryRow = new UnityEngine.GUIStyle(_row) { wordWrap = true };
+            _selectedCategoryRow = new UnityEngine.GUIStyle(_selectedRow) { wordWrap = true };
+            _soundRow = new UnityEngine.GUIStyle(_row);
+            _selectedSoundRow = new UnityEngine.GUIStyle(_selectedRow);
+            foreach (UnityEngine.GUIStyle soundStyle in new[] { _soundRow, _selectedSoundRow })
+            {
+                soundStyle.normal.textColor = UnityEngine.Color.white;
+                soundStyle.hover.textColor = UnityEngine.Color.white;
+                soundStyle.active.textColor = UnityEngine.Color.white;
+                soundStyle.focused.textColor = UnityEngine.Color.white;
+            }
+            _heading = new UnityEngine.GUIStyle(_skin.label) { fontSize = 21, fontStyle = UnityEngine.FontStyle.Bold };
+            _heading.normal.textColor = ConsoleTheme.UnityAccent;
+        }
+
+        private Boolean Button(String text, String help, params UnityEngine.GUILayoutOption[] options)
+        { return UnityEngine.GUILayout.Button(new UnityEngine.GUIContent(text, help), options); }
+
+        internal void Draw()
+        {
+            EnsureStyle();
+            UnityEngine.GUISkin previous = UnityEngine.GUI.skin;
+            Int32 depth = UnityEngine.GUI.depth;
+            UnityEngine.Color color = UnityEngine.GUI.color;
+            try
+            {
+                UnityEngine.GUI.skin = _skin; UnityEngine.GUI.depth = -10000;
+                UnityEngine.GUI.color = new UnityEngine.Color(.025f, .03f, .035f, 1);
+                UnityEngine.GUI.DrawTexture(new UnityEngine.Rect(0, 0, UnityEngine.Screen.width, UnityEngine.Screen.height), UnityEngine.Texture2D.whiteTexture);
+                UnityEngine.GUI.color = UnityEngine.Color.white;
+                Keyboard();
+                float width = UnityEngine.Screen.width, height = UnityEngine.Screen.height;
+                float left = Math.Min(270, width * .22f), right = Math.Min(430, width * .32f);
+                float middleX = left + 28, middleWidth = width - left - right - 56;
+                UnityEngine.GUILayout.BeginArea(new UnityEngine.Rect(16, 12, width - 32, 48));
+                UnityEngine.GUILayout.BeginHorizontal();
+                UnityEngine.GUILayout.Label("SOUND BROWSER", _heading);
+                if (Button("Back to MDC Menu  [Esc]", "Stop preview audio and return to the main MDC menu.", UnityEngine.GUILayout.Width(Math.Min(330, width * .4f))))
+                    ExitRequested = true;
+                UnityEngine.GUILayout.EndHorizontal();
+                UnityEngine.GUILayout.EndArea();
+
+                UnityEngine.GUILayout.BeginArea(new UnityEngine.Rect(16, 70, left, Math.Max(100, height - 86)));
+                UnityEngine.GUILayout.Label(_categoryFocus ? "AUDIO CATEGORIES [Arrows]" : "AUDIO CATEGORIES", _heading);
+                UnityEngine.GUILayout.Space(12);
+                _categoryScroll = UnityEngine.GUILayout.BeginScrollView(_categoryScroll);
+                for (Int32 i = 0; i < Categories.Length; i++)
+                {
+                    if (UnityEngine.GUILayout.Button(new UnityEngine.GUIContent(Categories[i]+" ["+_categoryCounts[i]+"]", CategoryHelp[i]), i == _category ? _selectedCategoryRow : _categoryRow, UnityEngine.GUILayout.Height(60)))
+                    { _categoryFocus = true; _category = i; _field = null; _bank = null; _filter = ""; UnityEngine.GUI.FocusControl(null); Refresh(); }
+                    UnityEngine.GUILayout.Space(5);
+                }
+                UnityEngine.GUILayout.EndScrollView();
+                UnityEngine.GUILayout.EndArea();
+
+                UnityEngine.GUILayout.BeginArea(new UnityEngine.Rect(middleX, 70, middleWidth, Math.Max(100, height - 86)));
+                String title = _field != null ? _field.Field : _bank != null ? "SFX " + _bank.SfxId + ": " + _bank.Name : Categories[_category];
+                UnityEngine.GUILayout.Label(title, _heading, UnityEngine.GUILayout.Height(48));
+                UnityEngine.GUI.SetNextControlName("sound-search");
+                String filter = UnityEngine.GUILayout.TextField(_filter, UnityEngine.GUILayout.Height(34));
+                ViewerHoverHelp.Last("Search this list by ID, name, resource key, alias or known usage. F focuses search. Escape leaves the text box.");
+                if (filter != _filter) { _categoryFocus = false; _filter = filter; Refresh(); }
+                UnityEngine.GUILayout.BeginHorizontal();
+                UnityEngine.GUILayout.Label(Count + " matches");
+                if ((_field != null || _bank != null) && Button("Back to groups", "Return to the field or SFX bank list.")) { _field=null; _bank=null; _filter=""; Refresh(); }
+                if (Button("Clear search", "Show every entry in the current list.")) { _filter = ""; Refresh(); }
+                UnityEngine.GUILayout.EndHorizontal();
+                float viewport = Math.Max(40, height - 285);
+                if (_reveal)
+                {
+                    float top = _selected * 42;
+                    if (top < _scroll.y) _scroll.y = top;
+                    else if (top + 42 > _scroll.y + viewport) _scroll.y = top + 42 - viewport;
+                    _reveal = false;
+                }
+                UnityEngine.Rect listRect = UnityEngine.GUILayoutUtility.GetRect(middleWidth, viewport);
+                _scroll = UnityEngine.GUI.BeginScrollView(listRect, _scroll, new UnityEngine.Rect(0, 0, Math.Max(1, middleWidth - 24), Math.Max(viewport, Count * 42)));
+                if (Count == 0) UnityEngine.GUI.Label(new UnityEngine.Rect(8, 8, Math.Max(1, middleWidth - 40), 70), "No matching sounds or groups. Try a different search.");
+                // Only build visible rows; large battle catalogs must not stall playback.
+                Boolean openGroup = false;
+                Int32 first = Math.Max(0, Math.Min(Count, (Int32)(_scroll.y / 42)));
+                Int32 end = Math.Min(Count, first + (Int32)(viewport / 42) + 3);
+
+                for (Int32 i = first; i < end; i++)
+                {
+                    String text, help;
+                    if (Groups)
+                    {
+                        text = _category == 0 ? _fields[i].Field + "  (" + _fields[i].Sounds.Count + ")" : _banks[i].SfxId + ": " + _banks[i].Name + "  (" + _banks[i].Sounds.Count + ")";
+                        help = text + "\nClick to open this group's sounds.";
+                    }
+                    else
+                    {
+                        DevSoundEntry entry = _entries[i];
+                        text = EntryTitle(entry);
+                        help = text + "\n" + entry.Path + "\nClick to select and preview. Enter or Space replays.";
+                    }
+                    if (UnityEngine.GUI.Button(new UnityEngine.Rect(0, i * 42, Math.Max(1, middleWidth - 24), 38), new UnityEngine.GUIContent(text, help), i == _selected ? _selectedSoundRow : _soundRow))
+                    { _categoryFocus = false; _selected = i; UnityEngine.GUI.FocusControl(null); if (Groups) openGroup = true; else Activate(); }
+                }
+                UnityEngine.GUI.EndScrollView();
+                UnityEngine.GUILayout.Label(_categoryFocus ? "Up / Down: category   Enter: open list\nEsc: return to MDC" : "Up / Down: select + play   Enter / Space: replay\nEsc: audio categories   S / X: stop");
+                UnityEngine.GUILayout.EndArea();
+
+                UnityEngine.GUILayout.BeginArea(new UnityEngine.Rect(width - right - 16, 70, right, Math.Max(100, height - 86)));
+                _detailScroll = UnityEngine.GUILayout.BeginScrollView(_detailScroll);
+                UnityEngine.GUILayout.Label("PLAYBACK", _heading);
+                UnityEngine.GUILayout.Space(12);
+                UnityEngine.GUILayout.BeginHorizontal();
+                Boolean enabled = UnityEngine.GUI.enabled;
+                UnityEngine.GUI.enabled = Selected != null;
+                if (Button("Play / Replay", "Play the selected sound using its original sound category. Enter or Space also plays.", UnityEngine.GUILayout.Height(46))) Activate();
+                UnityEngine.GUI.enabled = enabled;
+                if (Button("Stop", "Stop all browser playback, including pending embedded sound loads. Shortcut: S or X.", UnityEngine.GUILayout.Height(46))) Status = _service.StopAll();
+                UnityEngine.GUILayout.EndHorizontal();
+                UnityEngine.GUILayout.Space(12);
+                UnityEngine.GUILayout.Label(Status);
+                UnityEngine.GUILayout.Space(24);
+                UnityEngine.GUILayout.Label("SELECTED SOUND", _heading);
+                DevSoundEntry selected = Selected;
+                if (selected == null) UnityEngine.GUILayout.Label("Open a group or select a sound to see its details.");
+                else
+                {
+                    if (_aliasEntry != selected) { _aliasEntry = selected; _alias = selected.Identity ?? ""; _detailScroll = UnityEngine.Vector2.zero; }
+                    UnityEngine.GUILayout.Label(EntryTitle(selected));
+                    UnityEngine.GUILayout.Space(10);
+                    UnityEngine.GUILayout.Label("Resource: " + selected.Path);
+                    UnityEngine.GUILayout.Label("Sound type: " + selected.SoundType);
+                    if (selected.LocalSlot >= 0)
+                        UnityEngine.GUILayout.Label("Bank slot: local " + selected.LocalSlot + " / runtime " + selected.RuntimeSlot);
+                    if (!String.IsNullOrEmpty(selected.Usage)) UnityEngine.GUILayout.Label("Vanilla use: " + selected.Usage);
+                    UnityEngine.GUILayout.Space(18);
+                    UnityEngine.GUILayout.Label("SEQUENCE COMMAND", _heading);
+                    UnityEngine.GUILayout.Label(selected.SequenceCall);
+                    if (Button("Copy SEQ command", "Copy the PlaySound command for this sound. Shortcut: Ctrl+C when not typing.")) Copy();
+                    UnityEngine.GUILayout.Space(24);
+                    UnityEngine.GUILayout.Label("CUSTOM NAME", _heading);
+                    UnityEngine.GUI.SetNextControlName("sound-alias");
+                    _alias = UnityEngine.GUILayout.TextField(_alias, UnityEngine.GUILayout.Height(34));
+                    ViewerHoverHelp.Last("Give this sound a recognizable name. Saving writes SoundAliases.txt; it does not rename audio files. Clear the name and save to remove your alias.");
+                    if (Button("Save name", "Save this custom name. An empty name removes the alias."))
+                        Status = _service.SaveAlias(selected, _alias);
+                }
+                UnityEngine.GUILayout.EndScrollView();
+                UnityEngine.GUILayout.EndArea();
+                _help.Draw();
+                if (openGroup) Activate();
+            }
+            finally { UnityEngine.GUI.skin = previous; UnityEngine.GUI.depth = depth; UnityEngine.GUI.color = color; }
+        }
+
+        private static String EntryTitle(DevSoundEntry entry)
+        {
+            String id = entry.Category == DevSoundCategory.SfxSound ? "SFX " + entry.SfxId + " / " + entry.RuntimeSlot :
+                entry.Category == DevSoundCategory.ResidentSfxSound ? "Resident " + entry.RuntimeSlot : entry.Id.ToString();
+            return id + ": " + (String.IsNullOrEmpty(entry.Identity) ? entry.Name : entry.Identity);
+        }
+
+        public void Dispose()
+        {
+            _service.StopAll();
+            UnityEngine.Cursor.visible = _savedCursor; UnityEngine.Cursor.lockState = _savedLock;
+            if (_skin != null) UnityEngine.Object.Destroy(_skin);
+            if (_selectedTexture != null) UnityEngine.Object.Destroy(_selectedTexture);
         }
     }
 }

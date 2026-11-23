@@ -1,0 +1,243 @@
+# Memoria Dev Console — v1.4.1
+**November 23, 2026**
+
+- Fixed black backgrounds in the Rendered Field Viewer. MDC detects each field atlas and uses 32 px tiles for original backgrounds or 64 px tiles for Moguri overrides, even when the global tile setting differs. The viewer also skips the invalid placeholder field when opening.
+- Pause title-screen and gameplay music while MDC is open. Music resumes when MDC closes, and audio previews still play.
+- Give the main console buttons translucent fills inspired by the SFX Previewer.
+
+# Memoria Dev Console — v1.4
+**November 22, 2026**
+
+### New — Rendered Field Viewer
+- Browse FFIX fields with searchable IDs and names.
+- Preview field backgrounds, SPS effects, weather, and tile animations directly in-game.
+- View Background SPS and Object SPS separately, with individual effect controls.
+- Added All Scenarios mode to preview effects from different field events together.
+- Added rain effects, animated background tiles, and SPS looping controls.
+- Play or stop all effects and mute preview audio.
+
+### SFX Previewer
+- Added selectable enemy models and battle arenas.
+- Added enemy hit animations and randomized damage numbers.
+- Added SFX audio playback and improved animation timing.
+- Improved playback controls, effect navigation, and camera handling.
+- Redesigned the interface with a searchable SFX list and larger preview controls.
+
+### Sound Browser
+- Completely redesigned with searchable sound lists, categories, and playback controls.
+- Added mouse navigation, keyboard shortcuts, and contextual tooltips.
+- Improved browsing of field sounds and SFX sound banks.
+
+### Console & UI
+- Redesigned the main console with a compact two-column layout and updated tool menus.
+- Added a consistent dark interface across development tools and viewers.
+- Added customizable console colours, saved between sessions.
+- Added the FFIX crystal emblem, updated application icons, and v1.4 branding.
+- Improved navigation, tooltips, descriptions, scrolling, and text readability.
+- Added direct shortcuts for the Model Viewer, SFX Previewer, and Field Viewer.
+- Improved Live Log presentation, filtering, and window sizing.
+
+### Tools & Asset Export
+- Added model-ID FBX export to the Asset Dumper.
+- Renamed Field Creator to **Field Background Toolkit**, with clearer descriptions of its capabilities.
+- Renamed World Entrance Editor to **World Entrance Creator**, with improved return-exit instructions.
+- Improved Model Viewer SPS search and results navigation.
+- Refined the interfaces for advanced tools, save states, and export menus.
+
+### Fixes & Compatibility
+- Updated MDC compatibility with the current Memoria stable API.
+- Fixed navigation and selection issues in the Warp and Log Filter menus.
+- Improved viewer exit handling and restoration of normal gameplay.
+- Improved SFX playback cleanup and audio handling.
+- Reduced unnecessary diagnostic messages in Live Log.
+- Fixed several UI rendering, input, and navigation issues.
+
+**Note:** Some Field Viewer effect placements and scenario previews are approximate. Full field gameplay and complete battle sequences are not simulated.
+==========================================================================
+PREVIOUS RELEASE
+==========================================================================
+
+MEMORIA DEV CONSOLE - VERSION 1.3
+October 31, 2026
+
+FIELD CREATOR TOOL
+- Added a dedicated Field Creator entry to the home menu.
+- Export source resources by field ID or from the current loaded field.
+- Removed the complete-game field dump from the interface.
+- Expanded exports: BGX/layer PNGs, BGS/BGI, OBJ walkmesh, atlases, SPS data,
+  texture banks, and other available field resources, with an export report.
+- Generate a camera-0 composite preview with configurable layer exclusions.
+- Respect additive/subtractive BGX effect layers in composite previews; fix
+  lighting overlays hiding scenery, including Field 251.
+- Rebuild redesigned artwork into a native BGS/atlas field package, retaining
+  tile depths, alpha masks, effects, and original geometry.
+- Added a guided Cut PNG for a Field flow: select the target field, then PNG.
+- Explain how the target defines layer shapes, masks, and required resolution.
+- Keep the target ID visible during PNG selection and on the cut action.
+- Explain how to export missing target resources; highlight the input folder.
+- Automatically resize artwork to the required canvas before cutting.
+- Made NativeField the primary cutter output; keep PNG/BGX editing references
+  separately under EditingReferences with a START_HERE installation guide.
+- Account for Memoria's effective depth corrections when validating native cuts;
+  include corrected BGS overrides for renamed custom fields when required.
+- Added depth-safe NativeField output: retain the original BGS tile geometry,
+  depth, cameras and animation while rebuilding the packed artwork atlas.
+- Preserve effect textures during cutting; apply artwork changes relative to
+  the source composite to prevent duplicate lighting and unchanged-art drift.
+- Keep flattened BGX as .bgx.reference; include depth reports and install guidance.
+- Preserve input files; save cut layers and supporting resources in a new folder.
+- Remember the selected field, show PNG dimensions, and check broken BGX paths.
+- Open the selected field or latest cut folder directly.
+- Composite previews approximate layering; resizing stretches to fit. Review
+  animation, depth, and walkmesh alignment in game.
+
+WORLD ENTRANCE EDITOR
+- Create custom entrances from the player's captured world position.
+- Set destination field, script-controlled arrival entrance, and radius.
+- Add a centered vanilla-style entrance nameplate.
+- Restrict entrances by world state, story progress, or mod-defined conditions.
+- Test entrances immediately through MDC without rebuilding a mod.
+- Install JSON and generated runtime sources into a selected mod.
+- Use Compile + Restart to build new or changed runtime sources.
+- Update JSON without rebuilding when the compiled runtime is current.
+- Exported player mods work without MDC installed.
+- Support field-script returns through MemoriaDictionary 988[0]: entry sets
+  it to 1; the exit script sets it to 0 to request return to the saved origin.
+
+ENTRANCE EDITOR INTERFACE
+- Added Copy HWS Return Block with placement instructions for the desired exit's
+  Region_Range function, before vanilla exit actions.
+- Group settings into Entrance, Destination, World Position, Destination Mod,
+  and collapsible Advanced sections.
+- Show a definition for each highlighted setting, including the capture hotkey.
+- Use Enter to edit, toggle, capture, choose a mod, or start installation.
+- Keep settings visible when no entrance is selected; N/P creates an entrance.
+- Put primary controls near the top; F1 opens the full grouped control list.
+- Hide the unused interaction-prompt setting while preserving existing data.
+
+DEAD PEPPER GATE - EXPERIMENTAL
+- Added an Enabled/Disabled option under Advanced; disabled by default.
+- Require native Dead Pepper use near an entrance before it unlocks.
+- Track Choco's action and return of control; allow scripted movement outside
+  the radius during use. No extra pepper is consumed by MDC.
+- Save unlocks per entrance ID; dismount to enter afterward.
+- Show "Use a Dead Pepper here" only on MDC test entrances.
+- Successful test unlocks show "A secret area has been found!" for four
+  seconds with SoundEffect 683. Installed entrances omit these test messages.
+- Native in-game behavior remains under testing.
+
+WORLD-MAP TEXTURE DUMPER
+- Added source 2D atlas and animation-frame export with an index/report.
+- Removed repeated material-reference copies.
+- Fixed flat-gray readback and flipped output in both export paths.
+- Disc-specific replacements still require their own runtime handling.
+
+CONSOLE AND NAVIGATION
+- Use cyan selections and headings, yellow status/warnings, green paths, and
+  subdued control hints; color the ASCII header and console title cyan.
+- Move battle script byte dumps and all SFX / SEQ data into Asset Dumper > Other.
+- Block background MDC and in-game menu navigation while Model Viewer is open.
+- Highlight the Model Viewer F11 FBX export instruction in yellow.
+- Support Shift/Caps Lock casing across text editors, held Delete/Backspace,
+  and Ctrl+A to clear input; repeat is limited to editing, not menu actions.
+- Added F in Live Log: per-mod and Memoria/Unattributed Normal, Hidden, or Cyan
+  filters with saved preferences. Source matching uses identifiable tags; raw
+  log files stay unchanged and continuation lines follow their entry.
+- Grouped the home menu by use:
+    L Live Log                  1 Compile + Restart
+    2 Restart Game              3 Return to Launcher
+    4 Save States               5 Warp / Story Jump
+    6 Model Viewer              7 Field Creator Tool
+    8 Sound Browser             9 World Entrance Editor
+    0 Asset Dumper
+- Updated shortcuts, descriptions, and arrow navigation to match.
+- Wrap long messages/paths; resize the console to fit content within the screen.
+- Keep Live Log and save-list sizing stable; respect maximized windows.
+- Stop background asset updates from reopening a page after navigating away.
+- Ignore typing in other applications; prevent accidental editor changes.
+- Fix blue selection flashes and Ctrl+A behavior in entrance value editing.
+
+AUDIO FIXES
+- Clear active and pending title/movie music during warps and state loads.
+- Guard against title music restarting during scene teardown without stopping
+  destination BGM or deliberate returns to the title screen.
+
+INSTALLATION AND PACKAGING
+- Install to Mod now changes source/data only; it never builds or replaces DLLs.
+- Reuse MDC's existing Compile + Restart; verify pending builds before restart.
+- Remove the separate entrance compiler EXE, interim DLL, and PowerShell host.
+- Back up replaced files only; no full source-tree or compiled-DLL snapshots.
+- Roll back partial installation writes; avoid duplicate unchanged backups.
+- Archive historical build backups outside the shareable MDC folder.
+- Retire the separate installer's public-API audit. Complete mod sources are
+  required for compilation; DLL-only targets without sources remain blocked.
+- Consolidate support folders under FF9_Data:
+    FaceAtlas\                 Portrait reference image.
+    SoundData\                 Sound Browser identity/usage tables.
+    EntranceEditor\            Templates, config, and compact backups.
+    EntranceEditor\Tests\      MDC test entrance JSON.
+- Keep installed entrances in the target mod's FF9_Data\CustomWorldMapEntrances.
+- Remove the obsolete field-resource development report from the package.
+
+RELATED LOST CHAPTERS WORK - SEPARATE FROM MDC
+- Open the Disc 4 Evil Forest approach with consistent terrain and collision.
+- Apply the custom doorway texture only to the relevant Disc 4 triangles.
+- Integrate custom field arrival and dictionary-based world return.
+- Investigate native title-card scripting and fix a malformed BGX image path.
+
+VALIDATION / UPDATING
+- Builds and targeted isolated checks passed, including 18 source/data installer
+  checks. These do not replace full in-game testing; the gate is experimental.
+- Restart FFIX after updating MDC or compiling a changed runtime.
+- Include the required FF9_Data support folders when sharing MDC.
+
+==========================================================================
+PREVIOUS RELEASE
+==========================================================================
+
+
+Memoria Dev Console
+Changelog - Version 1.2.1
+
+SAVE STATES
+- Save states, checkpoints, and field history now capture and restore music.
+- Loading a state stops the previous area's music, including title-screen and
+  movie tracks, to prevent overlapping playback.
+- Existing states remain compatible. States created before music capture was
+  added must be recreated to restore their original track reliably.
+
+MODEL VIEWER
+- Added SPS search with F3. Find effects by exact ID or map/category name,
+  with map labels for duplicate IDs and a yellow Find SPS [F3] side-panel hint.
+- Restored F11 model asset export and added "Export Model Asset [F11]" beneath
+  Increment Keyframe in the controls panel.
+- Fixed bone markers, skeleton connections, and bone-number labels in battle.
+  Bone overlays now follow the model during animation.
+- Fixed world-map scenery showing through the viewer while keeping attached
+  weapons and the floor visible.
+- Fixed fast model browsing at the beginning and end of the model list.
+- Keep Coordinates now preserves placement when switching or refreshing models.
+- Improved model framing without revealing intentionally hidden hair or meshes.
+- Improved camera and frame-rate restoration when leaving the viewer.
+
+SOUND BROWSER
+- Press Ctrl+C to copy the selected sound's SEQ call to the clipboard.
+- Preview sounds with a single Enter press. Selecting another sound stops the
+  current preview and plays the new selection as soon as it finishes loading.
+- Switching sounds or pressing Stop cancels pending previews, preventing an
+  earlier selection from playing later.
+- Added A as a rename shortcut and X as an additional Stop shortcut.
+- Added filtering within SFX and field sound lists.
+
+CONSOLE INTERFACE
+- Improved menu descriptions, selection highlighting, and shortcut readability
+  while retaining the original MEMORIA text-art header and author credit.
+- Fixed highlight alignment so the selected row is colored correctly.
+- Save-state lists now fit the window height, with Left/Right page navigation.
+- Clarified Model Viewer transitions and the difference between development
+  snapshots and normal game saves.
+- Added clearer running/paused indicators and contextual Sound Browser hints.
+
+GAME EXIT
+- Improved shutdown cleanup to prevent Model Viewer restoration or pending
+  restart actions from starting another game process during normal exit.

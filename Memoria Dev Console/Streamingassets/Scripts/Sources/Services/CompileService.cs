@@ -306,6 +306,12 @@ namespace Memoria.DevConsole
 
                 if (success)
                 {
+                    // Verify pending entrance installs before scheduling the restart.
+                    // Keep success false if verification throws into the failure path.
+                    success = false;
+                    WorldEntranceInstaller.CompletePendingCompilations(WriteLine);
+                    BattleLayoutInstaller.CompletePendingCompilations(WriteLine);
+                    success = true;
                     WriteLine("All sources compiled successfully.");
                     WriteLine(String.Empty);
                     WriteLine("Hard restarting FFIX...");

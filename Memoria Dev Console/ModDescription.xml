@@ -1,122 +1,135 @@
-﻿<Mod>
+<Mod>
     <Name>Memoria Dev Console</Name>
-<Version>1.7-classified-sound-browser</Version>
-
-    <Author>Robert McFarlane</Author>
+    <Version>1.4.1</Version>
+    <Author>Cheddarbung</Author>
     <InstallationPath>Memoria Dev Console</InstallationPath>
-<PreviewFile>title.png</PreviewFile>
+    <PreviewFile>FF9_Data/UI/title.png</PreviewFile>
     <Category>Tools</Category>
     <Description><![CDATA[
-MEMORIA DEV CONSOLE
-===================
+MEMORIA DEV CONSOLE 1.4.1
+========================
 
-A development and testing utility for FINAL FANTASY IX modding with Memoria.
+Fixed black backgrounds in the Rendered Field Viewer. MDC detects each field atlas and uses 32 px tiles for original backgrounds or 64 px tiles for Moguri overrides, even when the global tile setting differs. The viewer also skips the invalid placeholder field when opening.
 
-Memoria Dev Console adds a detached, second-monitor-friendly development console that runs alongside the game and puts common modding, testing, logging, compilation, restart, field-save-state, and model-viewing tools in one place.
+An All-in-One Development Toolkit for Final Fantasy IX
+Memoria Dev Console (MDC) brings essential Final Fantasy 
+IX modding tools together in one workspace. From debugging and testing 
+to field artwork editing and custom world-map entrances, MDC is designed to make 
+developing and experimenting with FFIX mods faster and easier.
 
-The goal is simple: spend less time closing the game, digging through files, relaunching tools, and rebuilding test states — and more time actually developing and testing your mod.
+Press F10 to show or hide MDC. Use arrows and Enter, or the home-menu shortcuts.
+Development pages pause normal gameplay; Live Log lets the game keep running.
 
-DEV CONSOLE FEATURES
---------------------
+RUNTIME CONTROLS
+---------------
+[L] LIVE LOG
+- Follow Memoria.log while playing, including startup, warnings, and errors.
+- Press F to show, hide, or highlight installed-mod and Memoria log entries.
+  Identification uses available tags; ambiguous lines stay under Unattributed.
 
-LIVE LOG
-• Displays Memoria.log in a dedicated live console view.
-• Automatically follows new log entries as they are written.
-• The game remains fully playable while the Live Log is open.
-• Useful for watching script output, errors, warnings, battle behavior, field events, and other runtime information on a second monitor while testing.
+[1] COMPILE + RESTART
+- Run Memoria's existing compiler and read its output inside MDC.
+- Restart FFIX after a successful build; stay in MDC to fix and retry failures.
+- Build runtime sources installed by the World Entrance Editor.
 
-COMPILE + RESTART
-• Runs the standard Memoria.Compiler against the installed Memoria script sources.
-• Displays compiler output directly in the Dev Console.
-• After compilation, FINAL FANTASY IX is hard restarted so newly compiled script DLLs can be loaded by the new process.
-• Designed for rapid edit → compile → test iteration when developing C# script mods.
-• Normal C# compile errors are now reported as compile failures without breaking the Dev Console; restart is simply aborted until the source is fixed.
+[2] RESTART GAME / [3] RETURN TO LAUNCHER
+- Restart directly to reload scripts, patches, and game data.
+- Return to the launcher when changing enabled mods, load order, or settings.
 
-MODEL VIEWER
-• Opens Memoria's Model Viewer directly from the running game without requiring a trip through the launcher.
-• Intended for quickly checking model IDs, animations, weapons, geometry, and other model information during development.
-• Existing field UI and field rendering are isolated while the viewer is active.
-• When the Model Viewer closes, the Dev Console rolls the game back to the most recent stable field state so testing can continue cleanly.
+[4] SAVE STATES
+- Browse recent field history, set a checkpoint, or create named snapshots.
+- Named snapshots support fields and world maps, with screenshots and party
+  previews. Development snapshots are separate from normal game saves.
+- Capture and restore music alongside snapshot state.
 
-HARD RESET
-• Hard restarts FINAL FANTASY IX without returning to the Memoria launcher.
-• Useful when editing data such as BattlePatch.txt, DictionaryPatch.txt, or other parameters that require a fresh game process before changes can be tested.
-• Provides a much faster edit → reset → test loop than manually closing and relaunching the game.
+NAVIGATION
+----------
+[5] WARP / STORY JUMP - EXPERIMENTAL
+- Jump to development checkpoints or enter a mapped Field ID and story counter.
+- Recreate testing conditions quickly; keep a normal save before testing warps.
 
-FIELD SAVE STATES
-• Maintains a rolling timeline of recent stable field save states while you play.
-• Move backward and forward through captured field save states for rapid testing.
-• Set a separate checkpoint and return to it when repeatedly testing the same sequence, cutscene, trigger, NPC, boss encounter, or field script.
-• Field history can be preserved across Dev Console hard restarts, making repeated testing much faster than loading saves and replaying the same route.
-
-
-ASSET DUMPER
-• Runs complete-game development dumps directly from the Dev Console.
-• Field Background Dump reconstructs every internal field into per-field BGX metadata and editable PNG overlays under FieldDumper_Output in the game root.
-• 2D Texture Dump loads every known GEO model and exports its runtime model textures as PNGs under 2D Texture Dump Output in the game root.
-• These are intentionally whole-game dumps and create a large number of files.
-• The integrated texture dump does not dump animations.
-• Current Battle Background PNGs dumps the live battle arena textures from btlBGPtr, preserving exact texture names plus a renderer/material map for one-off battle-specific reskins.
-
-WARP / STORY JUMP
-• Adds a native F10 Dev Console page for field/story warping.
-• Includes tested Ice Cavern / Disc 2 development checkpoints plus Lost Chapters custom field shortcuts.
-• Manual mode accepts any mapped Field ID + ScenarioCounter.
-• Warp execution is marshalled from the native Win32 window thread back to Unity's main thread before touching FFIX state.
-
-SOUND BROWSER + PREVIEW
-• Browses every entry exposed by Memoria's Sound Effect, BGM/Music, Song, SFX Sound, and Movie Audio metadata banks.
-• Previews audio directly from the native F10 Dev Console while all SoundLib calls remain safely on Unity's main thread.
-• Drills into each battle SFX ID to expose its resident and effect-specific embedded sound slots.
-• Shows friendly filenames and known vanilla music/sound-effect uses extracted from the complete named field-script dump.
-• Supports fast paging, ID/name/usage filtering, controller navigation, and one-key Stop All.
-• Separates shared resident battle sounds from each move's own sounds, so Fire, Thunder, and other SFX no longer begin with the same repeated bank.
-• Groups field sound effects by every known vanilla field location where they are called.
-• Keeps every raw seXXXXXX key intact and displays inferred identity, vanilla use, and sequence SoundType separately.
-• Divides ordinary effects into enemy battle, player attack, known, unknown, and field-location views.
-• Press N on any sound to save a permanent custom name in SoundAliases.txt.
-
-RESET TO LAUNCHER
-• Shuts FINAL FANTASY IX down and restarts the Memoria launcher instead of immediately relaunching the game.
-• Use this when you need to enable or disable mods, change mod priority/order, alter launcher options, or adjust Memoria settings before the next test.
-
-CONTROLLER + KEYBOARD WORKFLOW
-• The Dev Console supports keyboard and controller navigation.
-• F10 globally shows or hides the console.
-• Controller Hotkey: Press R2 + R1 + L2 + L1 + D-Pad Down to open or close the Memoria Dev Console.
-• Controller shortcuts are available for fast console access and hard resets during testing.
-• The console freezes normal game processing on development pages where isolation is required, while Live Log remains passive so the game can be played normally while logs are monitored.
-
-The Dev Console is intended as a development utility rather than a gameplay mod. It is especially useful for field scripting, battle scripting, custom C# development, model/animation work, patch-file editing, compatibility testing, and repeated encounter testing.
-
-
-HWS CUSTOM ID INPUT SAVER — OPTIONAL SEPARATE TOOL
-===================================================
-
-The HWS Custom ID Input Saver is a small companion tool I made to speed up working with custom fields and custom battles in Hades Workshop.
-
-WHAT IT DOES
-------------
-
-When exporting a custom field or custom battle in Hades Workshop, the export dialog contains several dropdowns and ID inputs that need to be filled out.
-
-When you're repeatedly editing and re-exporting the same custom content, filling out those same values over and over gets tedious.
-
-The HWS Custom ID Input Saver remembers the values entered in those Hades Workshop export dialogs and automatically restores them the next time the dialog is opened.
-
-This lets you:
-
-• Set up your custom field or custom battle export once.
-• Close the export dialog and continue editing in Hades Workshop.
-• Reopen the export dialog later with your previous dropdown selections and ID inputs already restored.
-• Re-export and iterate without repeatedly filling out the same custom ID information.
-
-WHY IT IS NOT INCLUDED
+INSPECTION AND CREATION
 ----------------------
+[M] MODEL VIEWER
+- Inspect models, animations, weapons, textures, bones, and SPS effects.
+- Open from fields, world maps, or battles; restore the game when leaving.
+- Export the selected model with F11. Search SPS effects with F3.
+- Field scenes return through their latest stable entrance snapshot.
 
-The HWS Custom ID Input Saver is a separate Windows EXE and is not included with this Nexus download because the executable will not pass Nexus Mods' virus scan.
+[S] SFX PREVIEWER
+- Preview native effects with selectable enemy targets and battle arenas.
+- Search the full SFX list; play, pause, replay, stop and preview hit reactions.
+- Includes optional sound playback, preview damage and hover help.
 
-Rather than include an EXE that causes the mod archive to be flagged, I have left it out of the public download.
+[F] RENDERED FIELD VIEWER
+- Browse fields by ID/name with backgrounds, SPS, tile animation and audio.
+- Separate background/object effects, global audio mute and loop controls.
+- All-scenario mode overlaps reference effects; placement is approximate.
 
-If you're interested in using the HWS Custom ID Input Saver, private message me.    ]]></Description>
+[6] FIELD BACKGROUND TOOLKIT
+- Export a source field by ID or export the current loaded field.
+- Collect BGX/layer PNGs and available background, walkmesh, atlas, and SPS
+  resources, with an export report.
+- Build a composite preview, redesign the artwork, then rebuild a native field atlas.
+- Automatically fit a redesigned PNG to the required canvas resolution.
+- Preserve BGS tile depths, geometry, alpha masks, and effect textures.
+- Install NativeField contents; keep PNG/BGX references in EditingReferences.
+- Reuse the selected field, inspect PNG dimensions, and open output folders.
+- Composite previews approximate layering; check animation, depth, and walkmesh
+  alignment in game. Resizing fits the canvas and can stretch the artwork.
+
+[9] SOUND BROWSER
+- Browse sound effects, music, songs, movie audio, and SFX sound banks.
+- Viewer-style searchable lists, white sound labels, theme-colored selection and hover help.
+- Preview with Enter; filter entries and inspect known uses and categories.
+- Stop or replace previews without leaving an earlier load playing later.
+- Press Ctrl+C to copy the selected sound's PlaySound call for a custom SEQ.
+
+[7] WORLD ENTRANCE CREATOR
+- Capture an on-foot world position and create a custom field entrance.
+- Configure destination, arrival entrance, activation radius, and nameplate.
+- Set world-state, story-progress, and mod-defined condition restrictions.
+- Read a definition for each highlighted setting; F1 opens all controls.
+- Test immediately through MDC, without compiling or installing a mod.
+- Install entrance JSON and generated runtime sources into a selected mod,
+  then use Compile + Restart when the runtime needs rebuilding.
+- Current compiled runtimes can reload JSON-only entrance changes.
+- Exported entrances work for players without MDC installed.
+- Support a return to the recorded world entrance through a field-script
+  MemoriaDictionary 988 flag. The destination script controls arrival placement.
+- Advanced Dead Pepper Gate can require native Choco pepper use to unlock an
+  entrance permanently in that save. This feature remains experimental.
+- Installation backs up only replaced source/data files and rolls back partial
+  writes. It does not build or replace a mod DLL. Complete mod sources are
+  required before compiling; DLL-only targets without sources are rejected.
+
+[8] BATTLE SCENE EDITOR
+- Inspect and edit battle-scene setup through MDC.
+
+[0] ASSET DUMPER
+- Dump a model as FBX by ID using the same rotation/export logic as Model Viewer.
+- Export model textures by model ID or across the known model list.
+- Export the current battle background's textures and material map.
+- Dump battle script bytes and native SFX reference data.
+- Export world-map 2D texture atlases and animation frames with an index/report.
+- Field export, compositing, and cutting live in Field Background Toolkit.
+
+[C] CONSOLE COLOR
+- Choose a saved accent color for headers and selection highlights. White is default.
+- Description emphasis stays cyan, or gold with the cyan theme.
+
+WORKFLOW AND FILES
+------------------
+- Readable grouped menus, contextual help, wrapped text, and content-sized
+  windows. MDC ignores typing in other applications.
+- Generated asset exports go under Memoria Dev Console\Asset Dump.
+- Required portrait, sound identity, and entrance-editor resources live under
+  Memoria Dev Console\FF9_Data. Keep these folders when sharing MDC.
+- MDC test entrance JSON lives in FF9_Data\EntranceEditor\Tests.
+- Installed entrances live in the target mod's FF9_Data\CustomWorldMapEntrances.
+- Restart FFIX after updating MDC or compiling a changed runtime.
+
+Built for field and battle scripting, C# development, artwork replacement,
+audio identification, compatibility work, and repeated encounter testing.
+    ]]></Description>
 </Mod>

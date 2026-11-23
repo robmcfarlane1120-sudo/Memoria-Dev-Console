@@ -1,0 +1,14 @@
+SFX PREVIEWER
+
+Open MDC and select [S] SFX Previewer.
+Browse the left-hand list with Up/Down or search by SFX ID/name.
+Use Play/Replay, Pause, Stop, Previous and Next; Space replays the selected effect.
+Choose an enemy target and battle arena in the right-hand panel. Both can be hidden.
+Sound playback is optional. Preview hit reaction tests the target animation.
+Damage numbers are illustrative, not real battle damage calculations.
+
+Escape or F12 returns to MDC. Escape from MDC Home returns to the game.
+Previews use dummy actors and do not execute a full battle attack sequence.
+Custom multi-effect sequences still need testing in battle.
+When opening from battle, enter between attacks. If playback is unavailable,
+finish the active attack before opening the preview again.

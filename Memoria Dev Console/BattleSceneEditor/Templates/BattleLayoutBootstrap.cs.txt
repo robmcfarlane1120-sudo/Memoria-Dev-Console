@@ -1,0 +1,100 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using FF9;
+using Memoria.Prime;
+using UnityEngine;
+
+namespace Memoria.BattleSceneLayouts
+{
+    [AttributeUsage(AttributeTargets.Class)]
+    public sealed class BattleLayoutStartupAttribute : Attribute
+    {
+        public BattleLayoutStartupAttribute()
+        { GameLoopManager.Update -= Start; GameLoopManager.Update += Start; }
+        private static Boolean started;
+        private static void Start()
+        {
+            if (started) return; started = true; GameLoopManager.Update -= Start;
+            GameObject go = new GameObject("Mod Battle Scene Layouts");
+            UnityEngine.Object.DontDestroyOnLoad(go); go.AddComponent<ModBattleLayoutController>();
+        }
+    }
+    [BattleLayoutStartup] public static class BattleLayoutEntryPoint { }
+
+    public sealed class ModBattleLayoutController : MonoBehaviour
+    {
+        private BTL_SCENE scene;
+        private Int32 pattern = -1;
+        private BattleLayout layout;
+        private BattleLayoutCameraHook hook;
+        private readonly HashSet<String> applied = new HashSet<String>();
+        private Boolean reported;
+        private void Awake() { BattleLayoutRuntime.InstallHooks(Update); }
+        private void Update()
+        {
+            try { Tick(); }
+            catch (Exception ex)
+            {
+                if (hook != null) hook.Release(); layout = null;
+                if (!reported) { Log.Error("[Battle Scene Layouts] " + ex); reported = true; }
+            }
+        }
+        private void Tick()
+        {
+            if (!BattleLayoutRuntime.SceneAvailable()) { Clear(); return; }
+            BTL_SCENE current = FF9StateSystem.Battle.FF9Battle.btl_scene;
+            if (scene != current || pattern != current.PatNum)
+            {
+                Clear(); scene = current; pattern = current.PatNum;
+                String name = "Battle_" + FF9StateSystem.Battle.battleMapIndex + "_P" + pattern + ".json";
+                // First active mod containing a matching preset wins. Never load
+                // arbitrary disabled mod directories or presets for other patterns.
+                foreach (String mod in Memoria.Configuration.Mod.FolderNames)
+                {
+                    String path = Path.Combine(Path.Combine(mod, "FF9_Data/BattleSceneLayouts"), name);
+                    if (!File.Exists(path)) continue;
+                    layout = BattleLayout.Parse(File.ReadAllText(path));
+                    if (!BattleLayoutRuntime.Matches(layout)) throw new FormatException("Layout battle or pattern does not match " + path);
+                    break;
+                }
+            }
+            if (layout == null) return;
+            if (hook == null)
+            {
+                GameObject go = GameObject.Find("Battle Camera");
+                Camera cam = go == null ? null : go.GetComponent<Camera>();
+                if (cam != null)
+                {
+                    hook = BattleLayoutCameraHook.Attach(cam);
+                    hook.Settings = layout.Camera;
+                    hook.HoldCamera = true;
+                    hook.ModelUnits = layout.Units;
+                    hook.StageScale = layout.StageScale;
+                    hook.PrepareInitialFrame();
+                }
+            }
+            // Native initialization callbacks run before their model fade-in.
+            Boolean changed = false;
+            foreach (LayoutUnit unit in layout.Units)
+            {
+                Int32 initialized = unit.Party ? ff9btl.LOAD_INITCHR : ff9btl.LOAD_INITNPC;
+                if ((FF9StateSystem.Battle.FF9Battle.btl_load_status & initialized) == 0) continue;
+                String key = BattleLayoutRuntime.Key(unit); if (applied.Contains(key)) continue;
+                foreach (BTL_DATA b in BattleLayoutRuntime.Units())
+                    if (b.gameObject != null && b.bi.slave == 0 && BattleLayoutRuntime.Key(b) == key && BattleLayoutRuntime.ApplyUnit(b, unit))
+                    {
+                        applied.Add(key);
+                        changed = true;
+                        break;
+                    }
+            }
+            if (changed && hook != null) hook.PrepareInitialFrame();
+        }
+        private void Clear()
+        {
+            if (hook != null) hook.Release(); hook = null; scene = null; pattern = -1; layout = null; applied.Clear(); reported = false;
+        }
+        private void OnDestroy() { Clear(); }
+    }
+}

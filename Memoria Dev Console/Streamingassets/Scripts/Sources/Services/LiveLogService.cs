@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Diagnostics;
 using UnityEngine;
 
 namespace Memoria.DevConsole
@@ -16,6 +17,8 @@ namespace Memoria.DevConsole
         private StreamReader _reader;
         private String _logPath;
         private String _status = "Looking for Memoria.log...";
+        private const Int32 MaxTailBytes = 65536;
+        private const Int32 MaxLinesPerUpdate = 128;
 
         public LiveLogService(Int32 maxLines)
         {
@@ -102,9 +105,18 @@ namespace Memoria.DevConsole
 
         private void ReadNewLines()
         {
+            // A script error can append gigabytes of repeated lines. The log
+            // viewer must never monopolize the Unity frame or queue that backlog.
+            if (_stream.Length - _stream.Position > MaxTailBytes)
+            {
+                _reader.DiscardBufferedData();
+                _stream.Seek(-MaxTailBytes, SeekOrigin.End);
+                _reader.ReadLine(); // Discard the first partial line.
+            }
             String line;
-
-            while ((line = _reader.ReadLine()) != null)
+            Stopwatch budget = Stopwatch.StartNew();
+            Int32 count = 0;
+            while (count++ < MaxLinesPerUpdate && budget.ElapsedMilliseconds < 2 && (line = _reader.ReadLine()) != null)
                 AddLine(line);
         }
 
@@ -112,6 +124,8 @@ namespace Memoria.DevConsole
         {
             _history.Enqueue(line);
             _pendingLines.Enqueue(line);
+            while (_pendingLines.Count > _maxLines)
+                _pendingLines.Dequeue();
 
             while (_history.Count > _maxLines)
                 _history.Dequeue();

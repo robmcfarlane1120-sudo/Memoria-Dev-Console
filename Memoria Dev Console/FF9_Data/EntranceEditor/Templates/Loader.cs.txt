@@ -1,0 +1,181 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using Memoria.Prime;
+
+using Memoria.GeneratedWorldEntrances.Json;
+using UnityEngine;
+
+namespace Memoria.GeneratedWorldEntrances
+{
+    public sealed class WorldEntranceDefinition
+    {
+        public String Id;
+        public Single WorldX;
+        public Single WorldZ;
+        public Single Radius = 4;
+        public Int16 DestinationField = 2800;
+        public Int32 DestinationEntrance = 9999;
+        public Int16 WorldMap;
+        public Int32? ScenarioMin;
+        public Int32? ScenarioMax;
+        public String Condition;
+        public Boolean Enabled = true;
+        public Boolean DeadPepperGate;
+        public String Prompt = "Enter";
+        public String EntranceTitle = "";
+    }
+
+    public static class WorldEntranceConditions
+    {
+        private static readonly Dictionary<String, Func<Boolean>> Conditions = new Dictionary<String, Func<Boolean>>(StringComparer.Ordinal);
+        public static void Register(String name, Func<Boolean> condition)
+        {
+            if (String.IsNullOrEmpty((name ?? "").Trim()) || condition == null) throw new ArgumentException("A named condition needs a name and predicate.");
+            Conditions[name] = condition;
+        }
+        internal static Boolean Known(String name) { return String.IsNullOrEmpty(name) || Conditions.ContainsKey(name); }
+        internal static Boolean Evaluate(String name)
+        {
+            if (String.IsNullOrEmpty(name)) return true;
+            Func<Boolean> condition;
+            try { return Conditions.TryGetValue(name, out condition) && condition(); }
+            catch (Exception ex) { Log.Warning("[World Entrance] Condition failed: " + name + ": " + ex.Message); return false; }
+        }
+    }
+
+    // Data-only loader; no editor integration or other mod discovery.
+    public static class WorldEntranceData
+    {
+        public static String DefinitionsPath { get { return Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(WorldEntranceData).Assembly.Location), "../../FF9_Data/CustomWorldMapEntrances/WorldEntrances.json")); } }
+        private static readonly Dictionary<String, WorldEntranceDefinition> Active = new Dictionary<String, WorldEntranceDefinition>();
+        private static Single nextPoll;
+        private static String observedFile;
+
+        public static void Startup()
+        {
+            GameLoopManager.Update -= Startup;
+            GameLoopManager.Update -= PollDefinitions;
+            GameLoopManager.Update += PollDefinitions;
+            try
+            {
+                if (File.Exists(DefinitionsPath)) { EnsureController(); Reload(); }
+            }
+            catch (Exception ex) { Log.Error("[World Entrance] Definitions not loaded: " + ex.Message); }
+        }
+
+        private static void PollDefinitions()
+        {
+            if (Time.realtimeSinceStartup < nextPoll) return;
+            nextPoll = Time.realtimeSinceStartup + 1f;
+            if (PersistenSingleton<FF9StateSystem>.Instance.mode != 3 || WorldEntranceTransition.IsBusy) return;
+            String path = DefinitionsPath;
+            String stamp = File.Exists(path) ? File.GetLastWriteTimeUtc(path).Ticks + ":" + new FileInfo(path).Length : "missing";
+            if (stamp == observedFile) return;
+            observedFile = stamp;
+            if (!File.Exists(path) && Active.Count == 0) return;
+            try { EnsureController(); Reload(); Log.Message("[World Entrance] JSON definitions reloaded."); }
+            catch (Exception ex) { Log.Error("[World Entrance] Keeping previous definitions: " + ex.Message); }
+        }
+
+        private static void EnsureController()
+        {
+            if (WorldEntranceController.Instance != null) return;
+            GameObject host = new GameObject("Generated_WorldEntrances");
+            UnityEngine.Object.DontDestroyOnLoad(host);
+            host.AddComponent<WorldEntranceController>();
+        }
+
+        internal static WorldEntranceDefinition ParseDefinition(JObject json)
+        {
+            if (json == null) throw new ArgumentException("No entrance definition supplied.");
+            foreach (String required in new[] { "id", "worldX", "worldZ", "radius", "destinationField" })
+                if (json[required] == null || json[required].Type == JTokenType.Null) throw new ArgumentException("Missing property: " + required);
+            if (json["id"].Type != JTokenType.String) throw new ArgumentException("ID must be a string.");
+            foreach (String property in new[] { "worldX", "worldZ", "radius" })
+                if (json[property].Type != JTokenType.Float && json[property].Type != JTokenType.Integer) throw new ArgumentException(property + " must be numeric.");
+            foreach (String property in new[] { "destinationField", "destinationEntrance", "worldMap", "scenarioMin", "scenarioMax" })
+                if (json[property] != null && json[property].Type != JTokenType.Null && json[property].Type != JTokenType.Integer) throw new ArgumentException(property + " must be an integer.");
+            if (json["entranceTitle"] != null && json["entranceTitle"].Type != JTokenType.Null && json["entranceTitle"].Type != JTokenType.String) throw new ArgumentException("Entrance title must be text.");
+            if (json["deadPepperGate"] != null && json["deadPepperGate"].Type != JTokenType.Boolean) throw new ArgumentException("Dead Pepper Gate must be true or false.");
+            if (json["enabled"] != null && json["enabled"].Type != JTokenType.Boolean) throw new ArgumentException("Enabled must be true or false.");
+            var d = new WorldEntranceDefinition {
+    Id=(String)json["id"], WorldX=(Single)json["worldX"], WorldZ=(Single)json["worldZ"], Radius=(Single)json["radius"],
+    DestinationField=(Int16)json["destinationField"], DestinationEntrance=(Int32?)json["destinationEntrance"]??9999,
+    WorldMap=(Int16?)json["worldMap"]??0, ScenarioMin=(Int32?)json["scenarioMin"], ScenarioMax=(Int32?)json["scenarioMax"],
+    DeadPepperGate=(Boolean?)json["deadPepperGate"]??false, Condition=(String)json["condition"], Enabled=(Boolean?)json["enabled"]??true, Prompt=(String)json["prompt"]??"Enter", EntranceTitle=(String)json["entranceTitle"]??""
+};
+            Validate(d);
+            return d;
+        }
+
+        internal static void Validate(WorldEntranceDefinition d)
+        {
+            if (d == null || String.IsNullOrEmpty((d.Id ?? "").Trim()) || d.Id.Length > 100) throw new ArgumentException("ID must contain 1–100 characters.");
+            if (!Finite(d.WorldX) || !Finite(d.WorldZ) || !Finite(d.Radius) || d.Radius <= 0 || d.Radius > 128)
+                throw new ArgumentException("Coordinates must be finite; radius must be greater than zero and at most 128.");
+            if (d.WorldMap != 0 && (d.WorldMap < 9000 || d.WorldMap > 9012 || d.WorldMap == 9001 || d.WorldMap == 9004 || d.WorldMap == 9006 || d.WorldMap == 9012))
+                throw new ArgumentException("World map must be 0 (any free-roam state) or a free-roam ID in 9000–9012.");
+            if (d.DestinationEntrance < 0 || d.DestinationEntrance > 65535 || d.ScenarioMin < 0 || d.ScenarioMax > 65535 || d.ScenarioMin > 65535 || d.ScenarioMax < 0 || (d.ScenarioMin.HasValue && d.ScenarioMax.HasValue && d.ScenarioMin > d.ScenarioMax))
+                throw new ArgumentException("Entrance and scenario limits must be 0–65535, with minimum <= maximum.");
+            if (d.DestinationEntrance == 65534) throw new ArgumentException("65534 is reserved for field-script return requests.");
+            if ((d.EntranceTitle ?? "").Length > 80 || (d.EntranceTitle ?? "").IndexOfAny(new[] { '[', ']', '\r', '\n' }) >= 0)
+                throw new ArgumentException("Entrance title must be plain single-line text, at most 80 characters.");
+            if (!IsField(d.DestinationField)) throw new ArgumentException("Destination field is not mapped by the installed engine: " + d.DestinationField);
+            if (!WorldEntranceConditions.Known(d.Condition)) throw new ArgumentException("Unknown named C# condition: " + d.Condition);
+        }
+
+        private static Boolean Finite(Single f) { return !Single.IsNaN(f) && !Single.IsInfinity(f); }
+        private static Boolean IsField(Int32 id)
+        {
+            if (id < 0 || id >= 9000 || !FF9DBAll.EventDB.ContainsKey(id)) return false;
+            Type utils = typeof(EventEngine).Assembly.GetType("EventEngineUtils");
+            FieldInfo field = utils == null ? null : utils.GetField("eventIDToFBGID", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            IDictionary fields = field == null ? null : field.GetValue(null) as IDictionary;
+            return fields != null && fields.Contains(id);
+        }
+
+        internal static JObject ReadDocument(String path)
+        {
+            if (!File.Exists(path)) return new JObject(new JProperty("schemaVersion", 1), new JProperty("entrances", new JArray()));
+            var root = JObject.Parse(File.ReadAllText(path));
+            if ((Int32?)root["schemaVersion"] != 1 || !(root["entrances"] is JArray))
+                throw new ArgumentException("Unsupported or malformed entrance document.");
+            var ids = new HashSet<String>(StringComparer.Ordinal);
+            foreach (JToken item in (JArray)root["entrances"])
+            {
+                if (!(item is JObject) || item["id"] == null || !ids.Add((String)item["id"])) throw new ArgumentException("Malformed or duplicate entrance ID in JSON.");
+            }
+            return root;
+        }
+
+        private static WorldEntrance ToRuntime(WorldEntranceDefinition d)
+        {
+            return new WorldEntrance { Id = d.Id, WorldX = d.WorldX, WorldZ = d.WorldZ, InteractionRadius = d.Radius,
+                WorldMap = d.WorldMap, DestinationField = d.DestinationField, DestinationEntrance = d.DestinationEntrance,
+                Prompt = d.Prompt, EntranceTitle = d.EntranceTitle, DeadPepperGate = d.DeadPepperGate, IsEnabled = () => d.Enabled && (!d.ScenarioMin.HasValue || FF9StateSystem.EventState.ScenarioCounter >= d.ScenarioMin) &&
+                    (!d.ScenarioMax.HasValue || FF9StateSystem.EventState.ScenarioCounter <= d.ScenarioMax) && WorldEntranceConditions.Evaluate(d.Condition) };
+        }
+
+        private static void Commit(Dictionary<String, WorldEntranceDefinition> next)
+        {
+            WorldEntranceRegistry.ReplaceManaged(Active.Keys.ToArray(), next.Values.Select(ToRuntime).ToArray());
+            Active.Clear(); foreach (var pair in next) Active.Add(pair.Key, pair.Value);
+        }
+
+        public static void Reload()
+        {
+            if (WorldEntranceTransition.IsBusy) throw new InvalidOperationException("Wait for the current transition before reloading.");
+            JObject root = ReadDocument(DefinitionsPath);
+            var next = new Dictionary<String, WorldEntranceDefinition>();
+            foreach (JObject item in (JArray)root["entrances"]) { var d = ParseDefinition(item); next.Add(d.Id, d); }
+            Commit(next);
+
+        }
+
+    }
+}

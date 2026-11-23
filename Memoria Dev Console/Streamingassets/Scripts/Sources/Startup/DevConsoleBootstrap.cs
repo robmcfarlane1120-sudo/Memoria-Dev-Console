@@ -21,7 +21,7 @@ namespace Memoria.DevConsole
 
     public static class DevConsoleBootstrap
     {
-        private static Boolean _started;
+        private static Boolean _started = false;
 
         public static void TryInitialize()
         {
@@ -29,20 +29,28 @@ namespace Memoria.DevConsole
                 return;
 
             _started = true;
+
             GameLoopManager.Update -= TryInitialize;
 
-            try
-            {
+          try
+{
+    GameObject host =
+        new GameObject("Memoria Dev Console");
 
-                GameObject host = new GameObject("Memoria Dev Console");
-                UnityEngine.Object.DontDestroyOnLoad(host);
-                host.AddComponent<DevConsoleController>();
+    UnityEngine.Object.DontDestroyOnLoad(host);
 
-            }
-            catch (Exception ex)
-            {
-                Log.Error("[Dev Console] Bootstrap FAILED: " + ex);
-            }
+    host.AddComponent<DevConsoleController>();
+
+    Log.Message(
+        "[Dev Console] Bootstrap initialized."
+    );
+}
+catch (Exception ex)
+{
+    Log.Error(
+        "[Dev Console] Bootstrap FAILED: " + ex
+    );
+}
         }
     }
 }

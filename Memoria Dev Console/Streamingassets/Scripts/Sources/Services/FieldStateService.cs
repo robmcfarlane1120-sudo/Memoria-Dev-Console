@@ -9,6 +9,8 @@ namespace Memoria.DevConsole
 {
     public sealed class FieldStateService
     {
+        public event Action BeforeSnapshotLoad;
+
         private const Int32 MaxSnapshots = 10;
         private const Int32 StableFramesBeforeSnapshot = 12;
 
@@ -161,6 +163,8 @@ namespace Memoria.DevConsole
                 if (root == null)
                     return "Snapshot failed: parser returned no state.";
 
+                CaptureSnapshotMusic(root);
+
                 FieldSnapshot snapshot = new FieldSnapshot();
                 snapshot.FieldId = field;
                 snapshot.LocationId = FF9StateSystem.Common.FF9.fldLocNo;
@@ -217,6 +221,7 @@ namespace Memoria.DevConsole
                 if (root == null)
                     return "CHECKPOINT_UNAVAILABLE";
 
+                CaptureSnapshotMusic(root);
                 JSONNode clonedNode = JSONNode.Parse(root.ToString());
                 JSONClass cloned = clonedNode as JSONClass;
                 if (cloned == null)
@@ -262,7 +267,7 @@ namespace Memoria.DevConsole
                 Log.Message("[Dev Console] Loading field checkpoint. Field " +
                             _checkpoint.FieldId + ", scenario " + _checkpoint.Scenario + ".");
 
-                FF9StateSystem.Serializer.Parser.ParseToFF9StateSystem(cloned);
+                RestoreSnapshotState(cloned);
                 PersistenSingleton<EventEngine>.Instance.ReplaceLoadMap();
 
                 _observedField = _checkpoint.FieldId;
@@ -320,6 +325,8 @@ namespace Memoria.DevConsole
                 JSONClass root = FF9StateSystem.Serializer.Parser.RootNodeInParser;
                 if (root == null)
                     return "Save failed: parser returned no state.";
+
+                CaptureSnapshotMusic(root);
 
                 String title = String.IsNullOrEmpty(rawTitle) ? "Untitled" : rawTitle.Trim();
                 if (title.Length == 0)
@@ -410,6 +417,41 @@ namespace Memoria.DevConsole
             }
         }
 
+        private static void CaptureSnapshotMusic(JSONClass root)
+        {
+            // Normal autosaves run WillAutosave before parsing. MDC parses directly,
+            // so capture live BGM explicitly without changing the engine's pending BGM.
+            Int32 musicId = FF9Snd.GetCurrentMusicId();
+            root["Data"]["60000_Sound"]["auto_save_bgm_id"].AsInt = musicId;
+            JSONClass audio = new JSONClass();
+            audio.Add("MusicId", new JSONData(musicId));
+            root.Add("DevConsoleAudio", audio);
+        }
+
+        private void RestoreSnapshotState(JSONClass data)
+        {
+            Action beforeLoad = BeforeSnapshotLoad;
+            if (beforeLoad != null) beforeLoad();
+            SceneTransitionAudio.Prepare();
+            FF9StateSystem.Serializer.Parser.ParseToFF9StateSystem(data);
+            // Title music (including FMV000) uses MusicPlayer rather than the
+            // field/world dispatcher. Stop both standalone channels before BGM restore.
+            SoundLib.StopMusic(0);
+            if (SoundLib.MovieAudioPlayer != null)
+                SoundLib.MovieAudioPlayer.StopMusic(0);
+            AllSoundDispatchPlayer player = SoundLib.GetAllSoundDispatchPlayer();
+            if (player != null)
+            {
+                player.FF9SOUND_SONG_STOPCURRENT();
+                player.StopAndClearSuspendBGM(-1);
+            }
+            FF9Snd.LatestWorldPlayedSong = -1;
+            JSONNode audio = data["DevConsoleAudio"];
+            if (audio != null && audio.AsObject != null)
+                FF9StateSystem.Sound.auto_save_bgm_id = audio["MusicId"].AsInt;
+            // Match the engine's normal autoload path before ReplaceLoadMap.
+            SharedSerializerEvent.DidAutoload();
+        }
         public String LoadNamedSave(String id)
         {
             try
@@ -433,7 +475,7 @@ namespace Memoria.DevConsole
                 Log.Message("[Dev Console] Loading named save \"" + save.Title + "\" (" +
                             GetMapTypeLabel(save.MapMode) + " " + GetDisplayMapId(save) + ").");
 
-                FF9StateSystem.Serializer.Parser.ParseToFF9StateSystem(data);
+                RestoreSnapshotState(data);
                 PersistenSingleton<EventEngine>.Instance.ReplaceLoadMap();
 
                 _observedField = save.FieldId;
@@ -684,7 +726,7 @@ namespace Memoria.DevConsole
                             ": field " + snapshot.FieldId +
                             ", scenario " + snapshot.Scenario + ".");
 
-                FF9StateSystem.Serializer.Parser.ParseToFF9StateSystem(snapshot.Data);
+                RestoreSnapshotState(snapshot.Data);
                 PersistenSingleton<EventEngine>.Instance.ReplaceLoadMap();
 
                 _observedField = snapshot.FieldId;
